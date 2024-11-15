@@ -1,0 +1,122 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+# Load necessary package
+library(readr)
+
+# Read the .tsv file
+file_path <- "thyroid.survival.tsv"  # Replace with the actual file path
+tsv_data <- read_tsv(file_path)
+
+# View the data
+View(tsv_data)
+
+# Read the HiSeqV2 file
+hiseq_path <- "TCGA-THCA.star_counts.tsv"  # Replace with the actual file path
+hiseq_data <- read_tsv(hiseq_path)
+
+# View the data
+View(hiseq_data)
+```
+
+You can add options to executable code like this
+
+```{r}
+# Load necessary package
+library(readr)
+
+
+
+# Set row names to the first column (if not already set)
+rownames(hiseq_data) <- hiseq_data[[1]]
+hiseq_data <- hiseq_data[ , -1]  # Remove the first column
+
+# Transpose the data
+hiseq_transposed <- t(hiseq_data)
+
+# Convert transposed data back to a data frame
+hiseq_transposed_df <- as.data.frame(hiseq_transposed)
+
+# Set new column names as the original row names
+colnames(hiseq_transposed_df) <- rownames(hiseq_data)
+
+# Trim spaces from row names
+rownames(hiseq_transposed_df) <- trimws(rownames(hiseq_transposed_df))
+
+# Sort the row names alphabetically in descending order
+sorted_indices <- order(rownames(hiseq_transposed_df), decreasing = FALSE)
+hiseq_transposed_df <- hiseq_transposed_df[sorted_indices, ]
+
+# View the transposed and sorted data
+View(hiseq_transposed_df)
+```
+
+```{r}
+
+# Trim spaces from the "Sample" column (replace 'Sample' with the actual column name)
+tsv_data$sample <- trimws(tsv_data$sample)
+
+# Sort the metadata based on the "Sample" column in descending alphabetical order
+
+tsv_data<- tsv_data[order(tsv_data$sample, decreasing = FALSE), ]
+
+# View the cleaned and sorted metadata
+View(tsv_data)
+```
+
+```{r}
+# Load necessary libraries
+library(readr)
+library(dplyr)
+
+
+
+# Join the metadata and HiSeqV2 data on the Sample column and row names
+common_samples <- intersect(tsv_data$sample, rownames(hiseq_transposed_df))  # Find common samples
+metadata_filtered <- tsv_data %>% filter(sample %in% common_samples)
+hiseq_filtered <- hiseq_transposed_df[common_samples, ]
+
+# Merge the metadata and HiSeqV2 filtered data
+merged_data <- cbind(metadata_filtered, hiseq_filtered)
+
+# View the merged data
+View(merged_data)
+
+```
+
+```{r}
+phenotypes <- "phenotypes.clinical.tsv"  # Replace with the actual file path
+phenotypes <- read_tsv(phenotypes)
+
+# View the data
+View(phenotypes)
+```
+
+```{r}
+unique(phenotypes$name.tissue_source_site)
+```
+
+```{r}
+# Load necessary library
+library(readr)
+
+# Load the METABRIC dataset
+phenotypes_path <- "METABRIC.csv"  # Replace with the actual file path
+phenotypes <- read_csv(phenotypes_path)
+
+# View the data
+View(phenotypes)
+
+```
