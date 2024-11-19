@@ -18,49 +18,9 @@ library(future)
 library(furrr)
 ```
 
-## Metadata pre-processing
-
 ```{r}
 metadata <- read_tsv("TARGET_AML_Clinical.tsv")
 ```
-
-```{r}
-# Drop last three rows since they don't contain proper information
-#metadata <- head(metadata, n = nrow(metadata) - 3)
-
-# Identify columns where all values are NA or empty strings
-na_cols <- sapply(metadata, function(x) all(is.na(x)))
-empty_cols <- sapply(metadata, function(x) all(x == ""))
-
-# Combine NA and empty columns and identify which to drop
-cols_to_drop <- which(na_cols | empty_cols)
-
-# Drop the identified columns
-metadata <- metadata[, -cols_to_drop]
-
-# Keep only the variables we talked about
-metadata <- metadata[, c("TARGET USI", "Vital Status", "Overall Survival Time in Days", "MRD at end of course 1", "CR status at end of course 1")]
-
-# Drop rows with NAs
-metadata <- na.omit(metadata)
-
-# Keep only rows with the values we need
-metadata <- metadata[metadata$"MRD at end of course 1" %in% c("Yes", "No"), ]
-metadata <- metadata[metadata$"CR status at end of course 1" %in% c("CR", "not in CR"), ]
-
-```
-
-### We care about the following variables:
-
--   Vital status (alive/dead)
-
--   Overall survival time in days
-
--   MRD (for stratifying patients)
-
--   CR status (for stratifying patients)
-
-Although I kept the others in, maybe we find something interesting.
 
 ## Counts data pre-processing
 
@@ -68,13 +28,15 @@ Since we have different tsv files for every sample, we need to load them all, pr
 
 We can create two files:
 
-1.  One with gene names as row names and samples as column names. Here, because multiple gene ids may map to the same gene name we must either average those (approach A), keep the most expressed isoform (approach B) or another handling.
+1.  One with gene names as row names and samples as column names. Here, because multiple gene ids may map to the same gene name we must either sum those (approach A), keep the most expressed isoform (approach B) or another handling.
 
 2.  The same but with gene ids as row names, samples as column names plus another column with the gene names. Could be useful if we try CAR-T cell target evaluation for isoforms (maybe this is too much).
 
 ```{r}
-# First file: doesn't include gene_id
-# Sum different gene_id (approach B)
+# WE FOLLOW THIS
+
+# First file: doesn't include gene_id 
+# Sum the isoforms (approach A)
 
 # Step 1: List all TSV files in the counts directory
 counts_files <- list.files(path = "counts/", pattern = "\\.tsv$", full.names = TRUE)
@@ -91,23 +53,28 @@ process_file <- function(file) {
   df <- as_tibble(df)
 
   # Perform preprocessing
-  # Drop columns (assuming we keep stranded_first)
-  columns_to_drop <- c("gene_id", "gene_type", "unstranded", "stranded_second", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
+  # Drop columns that we do not need
+  columns_to_drop <- c("gene_id", "gene_type", "unstranded", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
   df <- dplyr::select(df, -all_of(columns_to_drop))
 
   # Drop columns that have all NA values
   df <- dplyr::select(df, where(~ any(!is.na(.))))
 
-  # Rename the selected column to the file name
-  new_column_name <- gsub(".*/|\\.tsv$", "", file)
-  df <- dplyr::rename(df, !!new_column_name := stranded_first)
+  # Sum values from "stranded_first" and "stranded_second"
+  df <- df %>%
+    mutate(summed_counts = stranded_first + stranded_second) %>%
+    dplyr::select(-stranded_first, -stranded_second)  # Drop the original columns
+
+  # Rename the resulting column to the file name
+  new_column_name <- gsub(".*/|\\.tsv$", "", file) # Remove path and extension
+  df <- dplyr::rename(df, !!new_column_name := summed_counts)
 
   # Group by gene_name and take the sum for duplicated gene names
   df <- df |>
     group_by(gene_name) |>
     summarise(across(everything(), sum, na.rm = TRUE), .groups = "drop")
 
-  # Round all values (except the "gene_name" column) to the nearest integer
+  # Round all values to the nearest integer
   df <- df |>
     mutate(across(where(is.numeric), round))
 
@@ -125,10 +92,11 @@ merged_counts <- merged_counts |> column_to_rownames(var = "gene_name")
 
 # Check the merged dataframe
 print(merged_counts)
-
 ```
 
 ```{r}
+# WE DON'T FOLLOW THIS
+
 # First file: doesn't include gene_id 
 # Keep the most expressed isoform (approach B)
 
@@ -147,24 +115,29 @@ process_file <- function(file) {
   df <- as_tibble(df)
 
   # Perform preprocessing
-  # Drop columns (assuming we keep stranded_first)
-  columns_to_drop <- c("gene_id", "gene_type", "unstranded", "stranded_second", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
+  # Drop columns that are not needed
+  columns_to_drop <- c("gene_id", "gene_type", "unstranded", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
   df <- dplyr::select(df, -all_of(columns_to_drop))
 
   # Drop columns that have all NA values
   df <- dplyr::select(df, where(~ any(!is.na(.))))
 
-  # Rename the selected column to the file name
+  # Sum the stranded_first and stranded_second columns, and rename the sum
+  df <- df %>%
+    mutate(total_stranded = stranded_first + stranded_second) %>% 
+    dplyr::select(-stranded_first, -stranded_second)
+
+  # Rename the `total_stranded` column to the file name for further processing
   new_column_name <- gsub(".*/|\\.tsv$", "", file)
-  df <- dplyr::rename(df, !!new_column_name := stranded_first)
+  df <- dplyr::rename(df, !!new_column_name := total_stranded)
 
   # Group by gene_name and take the maximum value for duplicated gene names (most expressed isoform)
-  df <- df |>
-    group_by(gene_name) |>
+  df <- df %>%
+    group_by(gene_name) %>%
     summarise(across(everything(), max, na.rm = TRUE), .groups = "drop")
 
   # Round all values (except the "gene_name" column) to the nearest integer
-  df <- df |>
+  df <- df %>%
     mutate(across(where(is.numeric), round))
 
   return(df)
@@ -181,10 +154,11 @@ merged_counts_max <- merged_counts_max |> column_to_rownames(var = "gene_name")
 
 # Check the merged dataframe
 print(merged_counts_max)
-
 ```
 
 ```{r}
+# TO BE USED IF WE ANALYZE ISOFORMS
+
 # Second file: includes gene_id
 
 # Step 1: Initialize an empty list to store dataframes
@@ -196,17 +170,23 @@ for (file in counts_files) {
   df <- read.delim(file, sep = "\t", header = TRUE)
 
   # Perform preprocessing
-  # Drop columns (assuming we keep stranded_first and gene_id)
-  columns_to_drop <- c("gene_type", "unstranded", "stranded_second", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
+  # Drop columns that we do not need (assuming we keep stranded_first, stranded_second, and gene_id)
+  columns_to_drop <- c("gene_type", "unstranded", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
   df <- df[, !(names(df) %in% columns_to_drop)]
-  
+
   # Drop columns that have all NA values
   df <- df[, colSums(!is.na(df)) > 0]
-  
-  # Rename columns (assuming we keep stranded_first)
+
+  # Add `stranded_first` and `stranded_second` and create a new combined column
+  df$combined_stranded <- rowSums(df[, c("stranded_first", "stranded_second")], na.rm = TRUE)
+
+  # Drop `stranded_first` and `stranded_second`
+  df <- df[, !(names(df) %in% c("stranded_first", "stranded_second"))]
+
+  # Rename the combined column to the file name
   new_column_name <- gsub(".*/|\\.tsv$", "", file)
-  colnames(df)[colnames(df) == "stranded_first"] <- new_column_name
-  
+  colnames(df)[colnames(df) == "combined_stranded"] <- new_column_name
+
   # Store the dataframe in the list
   counts_dataframe_list_with_ids[[file]] <- df
 }
@@ -216,4 +196,31 @@ merged_counts_with_ids <- reduce(counts_dataframe_list_with_ids, full_join, by =
 
 # Check the merged dataframe
 print(merged_counts_with_ids)
+```
+
+## Metadata pre-processing
+
+We care about the following variables:
+
+-   Vital status (alive/dead)
+
+-   Overall survival time in days
+
+-   MRD at end of course 1 (for stratifying patients)
+
+-   CR status at end of course 1 (for stratifying patients)
+
+```{r}
+# Keep only the variables we will work with
+metadata <- metadata[, c("TARGET USI", "Vital Status", "Overall Survival Time in Days", "MRD at end of course 1", "CR status at end of course 1")]
+
+# Drop rows with NAs
+metadata <- na.omit(metadata)
+
+# Keep only rows for the patients we chose
+# Extract sample names from the list of filenames
+sample_names <- basename(counts_files)
+sample_names <- gsub("\\.tsv$", "", sample_names)
+# Filter metadata to keep only rows matching the extracted sample names
+metadata <- metadata[metadata$`TARGET USI` %in% sample_names, ]
 ```
