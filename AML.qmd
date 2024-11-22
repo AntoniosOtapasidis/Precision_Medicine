@@ -33,133 +33,86 @@ We can create two files:
 2.  The same but with gene ids as row names, samples as column names plus another column with the gene names. Could be useful if we try CAR-T cell target evaluation for isoforms (maybe this is too much).
 
 ```{r}
-# WE FOLLOW THIS
+# Creates the data frame "merged_counts"
+# Doesn't include gene_id 
+# Sum the isoforms approach
 
-# First file: doesn't include gene_id 
-# Sum the isoforms (approach A)
+# Step 0: Define the output file path for merged_counts
+output_file <- "merged_counts.tsv"
 
-# Step 1: List all TSV files in the counts directory
+# Step 1: List all TSV files in the counts directory (this part is now global)
 counts_files <- list.files(path = "counts/", pattern = "\\.tsv$", full.names = TRUE)
 
-# Step 2: Set up parallel plan
-plan(multisession, workers = parallel::detectCores() - 1)
+# Step 2: Check if the file already exists
+if (file.exists(output_file)) {
+  # If the file exists, load it
+  merged_counts <- read.delim(output_file, sep = "\t", header = TRUE, row.names = 1)
+  print("Merged counts loaded from file.")
+} else {
+  # If the file does not exist, run the processing code to create it
 
-# Step 3: Define the processing function for each file
-process_file <- function(file) {
-  # Load the file into a dataframe
-  df <- read.delim(file, sep = "\t", header = TRUE)
+  # Step 3: Set up parallel plan
+  plan(multisession, workers = parallel::detectCores() - 1)
 
-  # Convert to tibble to work smoothly with dplyr functions
-  df <- as_tibble(df)
+  # Step 4: Define the processing function for each file
+  process_file <- function(file) {
+    # Load the file into a dataframe
+    df <- read.delim(file, sep = "\t", header = TRUE)
 
-  # Perform preprocessing
-  # Drop columns that we do not need
-  columns_to_drop <- c("gene_id", "gene_type", "unstranded", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
-  df <- dplyr::select(df, -all_of(columns_to_drop))
+    # Convert to tibble to work smoothly with dplyr functions
+    df <- as_tibble(df)
 
-  # Drop columns that have all NA values
-  df <- dplyr::select(df, where(~ any(!is.na(.))))
+    # Perform preprocessing
+    # Drop columns that we do not need
+    columns_to_drop <- c("gene_id", "gene_type", "unstranded", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
+    df <- dplyr::select(df, -all_of(columns_to_drop))
 
-  # Sum values from "stranded_first" and "stranded_second"
-  df <- df %>%
-    mutate(summed_counts = stranded_first + stranded_second) %>%
-    dplyr::select(-stranded_first, -stranded_second)  # Drop the original columns
+    # Drop columns that have all NA values
+    df <- dplyr::select(df, where(~ any(!is.na(.))))
 
-  # Rename the resulting column to the file name
-  new_column_name <- gsub(".*/|\\.tsv$", "", file) # Remove path and extension
-  df <- dplyr::rename(df, !!new_column_name := summed_counts)
+    # Sum values from "stranded_first" and "stranded_second"
+    df <- df %>%
+      mutate(summed_counts = stranded_first + stranded_second) %>%
+      dplyr::select(-stranded_first, -stranded_second)  # Drop the original columns
 
-  # Group by gene_name and take the sum for duplicated gene names
-  df <- df |>
-    group_by(gene_name) |>
-    summarise(across(everything(), sum, na.rm = TRUE), .groups = "drop")
+    # Rename the resulting column to the file name
+    new_column_name <- gsub(".*/|\\.tsv$", "", file) # Remove path and extension
+    df <- dplyr::rename(df, !!new_column_name := summed_counts)
 
-  # Round all values to the nearest integer
-  df <- df |>
-    mutate(across(where(is.numeric), round))
+    # Group by gene_name and take the sum for duplicated gene names
+    df <- df |>
+      group_by(gene_name) |>
+      summarise(across(everything(), sum, na.rm = TRUE), .groups = "drop")
 
-  return(df)
+    # Round all values to the nearest integer
+    df <- df |>
+      mutate(across(where(is.numeric), round))
+
+    return(df)
+  }
+
+  # Step 5: Apply the function to each file in parallel using furrr::future_map
+  counts_dataframe_list <- furrr::future_map(counts_files, process_file)
+
+  # Step 6: Merge all dataframes in the list by "gene_name"
+  merged_counts <- reduce(counts_dataframe_list, full_join, by = "gene_name")
+
+  # Step 7: Make gene_names the row names
+  merged_counts <- merged_counts |> column_to_rownames(var = "gene_name")
+
+  # Step 8: Save the merged_counts to a TSV file
+  write.table(merged_counts, file = output_file, sep = "\t", quote = FALSE, col.names = NA)
+  print("Merged counts computed and saved to file.")
 }
-
-# Step 4: Apply the function to each file in parallel using furrr::future_map
-counts_dataframe_list <- furrr::future_map(counts_files, process_file)
-
-# Step 5: Merge all dataframes in the list by "gene_name"
-merged_counts <- reduce(counts_dataframe_list, full_join, by = "gene_name")
-
-# Step 6: Make gene_names the row names
-merged_counts <- merged_counts |> column_to_rownames(var = "gene_name")
 
 # Check the merged dataframe
 print(merged_counts)
 ```
 
 ```{r}
-# WE DON'T FOLLOW THIS
-
-# First file: doesn't include gene_id 
-# Keep the most expressed isoform (approach B)
-
-# Step 1: List all TSV files in the counts directory
-counts_files <- list.files(path = "counts/", pattern = "\\.tsv$", full.names = TRUE)
-
-# Step 2: Set up parallel plan
-plan(multisession, workers = parallel::detectCores() - 1)
-
-# Step 3: Define the processing function for each file
-process_file <- function(file) {
-  # Load the file into a dataframe
-  df <- read.delim(file, sep = "\t", header = TRUE)
-
-  # Convert to tibble to work smoothly with dplyr functions
-  df <- as_tibble(df)
-
-  # Perform preprocessing
-  # Drop columns that are not needed
-  columns_to_drop <- c("gene_id", "gene_type", "unstranded", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
-  df <- dplyr::select(df, -all_of(columns_to_drop))
-
-  # Drop columns that have all NA values
-  df <- dplyr::select(df, where(~ any(!is.na(.))))
-
-  # Sum the stranded_first and stranded_second columns, and rename the sum
-  df <- df %>%
-    mutate(total_stranded = stranded_first + stranded_second) %>% 
-    dplyr::select(-stranded_first, -stranded_second)
-
-  # Rename the `total_stranded` column to the file name for further processing
-  new_column_name <- gsub(".*/|\\.tsv$", "", file)
-  df <- dplyr::rename(df, !!new_column_name := total_stranded)
-
-  # Group by gene_name and take the maximum value for duplicated gene names (most expressed isoform)
-  df <- df %>%
-    group_by(gene_name) %>%
-    summarise(across(everything(), max, na.rm = TRUE), .groups = "drop")
-
-  # Round all values (except the "gene_name" column) to the nearest integer
-  df <- df %>%
-    mutate(across(where(is.numeric), round))
-
-  return(df)
-}
-
-# Step 4: Apply the function to each file in parallel using furrr::future_map
-counts_dataframe_list <- furrr::future_map(counts_files, process_file)
-
-# Step 5: Merge all dataframes in the list by "gene_name"
-merged_counts_max <- reduce(counts_dataframe_list, full_join, by = "gene_name")
-
-# Step 6: Make gene_names the row names
-merged_counts_max <- merged_counts_max |> column_to_rownames(var = "gene_name")
-
-# Check the merged dataframe
-print(merged_counts_max)
-```
-
-```{r}
 # TO BE USED IF WE ANALYZE ISOFORMS
-
-# Second file: includes gene_id
+# Creates the data frame "merged_counts_with_ids"
+# Includes gene_id
 
 # Step 1: Initialize an empty list to store dataframes
 counts_dataframe_list_with_ids <- list()
