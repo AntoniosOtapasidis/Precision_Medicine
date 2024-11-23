@@ -178,7 +178,7 @@ We care about the following variables:
 
 ```{r}
 # Keep only the variables we will work with
-metadata <- metadata[, c("TARGET USI", "Vital Status", "Overall Survival Time in Days", "MRD at end of course 1", "CR status at end of course 1")]
+metadata <- metadata[, c("TARGET USI", "Vital Status", "Overall Survival Time in Days", "MRD at end of course 1", "CR status at end of course 1", "Protocol")]
 
 # Drop rows with NAs
 metadata <- na.omit(metadata)
@@ -264,20 +264,17 @@ gene_symbols <- rownames(merged_counts)
 # Step 3: Retrieve gene lengths from Ensembl using biomaRt
 # We want to retrieve 'hgnc_symbol' and 'transcript_length'
 gene_lengths_df <- getBM(
-  attributes = c("hgnc_symbol", "transcript_length"),
+  attributes = c("hgnc_symbol", "transcript_length", "transcript_is_canonical"),
   filters = "hgnc_symbol",
   values = gene_symbols,
   mart = ensembl
 )
 
-# PROBLEM: HOW SHOULD WE DECIDE THAT?
-# Group by gene and take the mean length (or max or median or something)
-gene_lengths_df <- gene_lengths_df %>%
-  group_by(hgnc_symbol) %>%
-  summarise(gene_length = round(mean(transcript_length))) 
+gene_lengths_df <- gene_lengths_df %>% 
+  dplyr::filter(!is.na(transcript_is_canonical))
 
 # Convert to a named vector
-gene_lengths <- setNames(gene_lengths_df$gene_length, gene_lengths_df$hgnc_symbol)
+gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc_symbol)
 
 # Check the resulting gene lengths
 print(gene_lengths)
