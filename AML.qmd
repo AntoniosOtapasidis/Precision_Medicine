@@ -9,6 +9,8 @@ if (!requireNamespace("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 if (!requireNamespace("doParallel", quietly = TRUE))
     install.packages("doParallel")
+if (!requireNamespace("tpm", quietly = TRUE))
+    install.packages("tpm")
 library(tidyverse)
 library(readr)
 library(biomaRt)
@@ -16,6 +18,13 @@ library(data.table)
 library(doParallel)
 library(future)
 library(furrr)
+library(survival)
+library(DESeq2)
+library(GSVA)
+library(ggplot2)
+library(dplyr)
+library(edgeR)
+library(purrr)
 ```
 
 ```{r}
@@ -145,7 +154,7 @@ for (file in counts_files) {
 }
 
 # Step 3: Merge all dataframes in the list by both "gene_name" and "gene_id"
-merged_counts_with_ids <- reduce(counts_dataframe_list_with_ids, full_join, by = c("gene_name", "gene_id"))
+merged_counts_with_ids <- purrr::reduce(counts_dataframe_list_with_ids, full_join, by = c("gene_name", "gene_id"))
 
 # Check the merged dataframe
 print(merged_counts_with_ids)
@@ -159,9 +168,9 @@ We care about the following variables:
 
 -   Overall survival time in days
 
--   MRD at end of course 1 (for stratifying patients)
+-   MRD at end of course 1&2 (for stratifying patients)
 
--   CR status at end of course 1 (for stratifying patients)
+-   CR status at end of course 1&2 (for stratifying patients)
 
 ```{r}
 # Keep only the variables we will work with
@@ -176,4 +185,237 @@ sample_names <- basename(counts_files)
 sample_names <- gsub("\\.tsv$", "", sample_names)
 # Filter metadata to keep only rows matching the extracted sample names
 metadata <- metadata[metadata$`TARGET USI` %in% sample_names, ]
+
+# Standardize the column names to make them easier to work with
+names(metadata) <- gsub("[[:space:]]|\\.", "_", names(metadata))
+
+# Rename columns for simplicity
+names(metadata)[names(metadata) == "MRD_at_end_of_course_1"] <- "MRD_status"
+names(metadata)[names(metadata) == "CR_status_at_end_of_course_1"] <- "CR_status"
+names(metadata)[names(metadata) == "Overall_Survival_Time_in_Days"] <- "Survival_Time"
+
+# Convert the values of the CR_status column (it is needed later for DESeq)
+metadata$CR_status <- ifelse(metadata$CR_status == "CR", "Yes", "No")
+```
+
+## Survival analysis
+
+```{r}
+# We want to stratify patients based on "MRD" or "CR", so we first need to convert them to 'factor'
+metadata$MRD_status <- factor(metadata$MRD_status, levels = c("No", "Yes"))
+metadata$CR_status <- factor(metadata$CR_status, levels = c("No", "Yes"))
+
+# We also need to convert "Vital status" to a boolean (0 for alive, 1 for dead)
+metadata$Vital_Status <- ifelse(metadata$Vital_Status == "Dead", 1, 0)
+
+# Create the survival object
+sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ CR_status, data = metadata)
+sd
+
+# Save the p-value
+p_value <- 1 - pchisq(sd$chisq, length(sd$n) - 1)
+
+# Create the Kaplan-Meier object and plot it
+km <- survfit(Surv(Survival_Time, Vital_Status) ~ CR_status, data = metadata)
+plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability",main = "Kaplan-Meier Plot")
+text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "red", cex = 1.2)
+```
+
+We don't find a **p-value** \< 0.05, which means the difference is not significant (p-value = 0.6 for MRD and 0.09 for CR).
+
+## DESeq
+
+We will perform differential gene expression analysis in order to find genes differentially expressed between responders and non-responders.
+
+```{r}
+# Create the DESeq object and run DESeq
+# DESeq is performed ALWAYS with raw counts
+dds <- DESeqDataSetFromMatrix(countData = merged_counts, colData = metadata, design = ~ CR_status)
+dds <- DESeq(dds)
+
+# Store the results and display a table of the number of significantly differentially expresssed genes
+res <- as.data.frame(results(dds))
+cat("Significantly differentially expressed genes between responders and non-responders.\n\nThis number doesn't add up to the total number of genes in merged_counts because there are NA values in p-adj for some genes.\n")
+print(table(res$padj < 0.05))
+
+# Filter the significant genes and extract their names
+significant_genes <- res[!is.na(res$padj) & res$padj < 0.05, ]
+significant_gene_names <- rownames(significant_genes)
+print(sort(significant_gene_names))
+```
+
+We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those. We will find the median expression and see if their expression is higher or lower. Because in this way we **COMPARE** samples, we need to use TPM values (or RPKM) and not raw counts, since we need to normalize for **SEQUENCING DEPTH**.
+
+## TPM calculation
+
+We don't have the TPM values (we actually have them, but for the unstranded values). First, we need the **GENE LENGTH** for that, which we don't have. We can try to get this info from Ensembl.
+
+```{r}
+# Step 1: Connect to Ensembl
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Step 2: Get all the gene names from merged_counts
+gene_symbols <- rownames(merged_counts)
+
+# Step 3: Retrieve gene lengths from Ensembl using biomaRt
+# We want to retrieve 'hgnc_symbol' and 'transcript_length'
+gene_lengths_df <- getBM(
+  attributes = c("hgnc_symbol", "transcript_length"),
+  filters = "hgnc_symbol",
+  values = gene_symbols,
+  mart = ensembl
+)
+
+# PROBLEM: HOW SHOULD WE DECIDE THAT?
+# Group by gene and take the mean length (or max or median or something)
+gene_lengths_df <- gene_lengths_df %>%
+  group_by(hgnc_symbol) %>%
+  summarise(gene_length = round(mean(transcript_length))) 
+
+# Convert to a named vector
+gene_lengths <- setNames(gene_lengths_df$gene_length, gene_lengths_df$hgnc_symbol)
+
+# Check the resulting gene lengths
+print(gene_lengths)
+```
+
+Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
+
+1.  Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length
+
+2.  Calculate scaling factors: Sum all RPK values per sample
+
+3.  Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)
+
+4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
+
+```{r}
+# Step 1: Identify common gene names between counts data and gene lengths
+common_genes <- intersect(rownames(merged_counts), names(gene_lengths))
+
+# Step 2: Subset merged_counts to keep rows with genes that are in common_genes
+counts_subset <- merged_counts[common_genes, ]
+
+# Step 3: Subset gene_lengths to keep only genes that are in common_genes
+gene_lengths_subset <- gene_lengths[common_genes]
+
+# Step 4: Convert counts data frame to a matrix, as required by 'tpm'
+counts_subset_matrix <- as.matrix(counts_subset)
+
+# Step 5: Ensure gene_lengths are in numeric vector format
+gene_lengths_vector <- as.numeric(gene_lengths_subset)
+
+# Step 6: Calculate RPK
+# Normalize counts by gene length (in kilobases)
+rpk <- counts_subset_matrix / (gene_lengths_vector / 1000)
+
+# Step 7: Calculate per-sample scaling factor
+total_rpk_per_sample <- colSums(rpk)
+
+# Step 8: Calculate the corrector counts by dividing total RPK by 1 million
+corrector_counts <- total_rpk_per_sample / 1e6
+
+# Step 9: Calculate TPM by dividing RPK by corrector counts for each sample
+tpm_matrix <- t(t(rpk) / corrector_counts)
+
+# Step 10: Convert TPM matrix back to a data frame
+tpm_counts <- as.data.frame(tpm_matrix)
+
+# Save the TPM values to a file
+write.table(tpm_counts, file = "tpm_counts.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
+```
+
+Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.
+
+```{r}
+# Since the significant genes were found based on the raw counts, we need first to check if they are present in the tpm dataframe
+common_significant_genes <- intersect(significant_gene_names, rownames(tpm_counts))
+
+# We will now implement a trick to check all individual significant genes. We will loop through all genes and store the results in a matrix.
+
+# Create an empty matrix to store the p-values and significance for each gene
+results_matrix <- matrix(nrow = length(common_significant_genes), ncol = 2)
+rownames(results_matrix) <- common_significant_genes
+colnames(results_matrix) <- c("p_value", "is_significant")
+
+# Loop through each gene in common_significant_genes
+for (gene in common_significant_genes) {
+  # Extract the gene expression values from tpm_counts
+  gene_values <- as.matrix(tpm_counts)[rownames(tpm_counts) == gene, ]
+  
+  # Calculate biomarker status based on median split for the current gene
+  metadata$biomarker_status <- gene_values > median(gene_values, na.rm = TRUE)
+
+  # Perform survival analysis using the Kaplan-Meier and log-rank test
+  sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata)
+  
+  # Extract p-value from the survdiff result
+  p_value <- 1 - pchisq(sd$chisq, length(sd$n) - 1)
+
+  # Store p-value and significance in the results matrix
+  results_matrix[gene, "p_value"] <- p_value
+  results_matrix[gene, "is_significant"] <- p_value < 0.05
+}
+
+# Convert results_matrix to a data frame for easier viewing
+results_df <- as.data.frame(results_matrix)
+results_df$is_significant <- as.logical(results_df$is_significant)
+
+# Print the results data frame
+print(results_df)
+
+# After that you can create a Kaplan-Meier plot for the genes(not displayed here)
+```
+
+## ssGSEA
+
+We found some genes that can point out a statistical difference in the survival of the two groups (high and low expression the gene). But genes rarely work individually in nature, so let's take a multivariate approach, that is, define a group of genes. We will start by selecting the e.g. 15 most significantly up regulated genes in responders, calculate the sample wise gene set enrichment and split again the patients into two groups.
+
+```{r}
+# Get only the 15 most significantly up regulated genes
+res2 <- res[res$padj < 0.05 & res$log2FoldChange > 0,]
+gene_set <- list(responder_set = rownames(res2[order(res2$padj),])[1:15])
+
+# Perform the sample wise gene set enrichment
+param <- ssgseaParam(as.matrix(tpm_counts), gene_set)
+enrich <- gsva(param)
+
+# Perform the log rank and produce the plot
+metadata$biomarker_status <- enrich[1,] > median(enrich[1,])
+sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
+sd 
+km <- survfit(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
+plot(km) 
+```
+
+```{r}
+# ALTERNATIVE APPROACH
+# Get a subset of the results of the DESeq genes that can stratify efficiently the patients
+significant_genes_df <- results_df %>% filter(is_significant == TRUE)
+
+# And now follow the same approach as the code block before
+# Ensure the significant_genes_df has rownames, which are the gene names
+significant_gene_names <- rownames(significant_genes_df)
+
+# Extract the significant genes from 'res' (the original DESeq2 results)
+significant_genes_with_logfc <- res[significant_gene_names, ]
+
+# Keep only upregulated genes (log2FoldChange > 0) and order by adjusted p-value
+res3 <- significant_genes_with_logfc %>%
+  filter(log2FoldChange > 0) %>%   # Filter for upregulated genes
+  arrange(padj)                    # Sort by adjusted p-value
+
+# Select the top 15 most significant genes
+gene_set <- list(responder_set = rownames(res3)[1:15])
+
+# Perform the sample wise gene set enrichment
+param <- ssgseaParam(as.matrix(tpm_counts), gene_set)
+enrich <- gsva(param)
+
+# Perform the log rank and produce the plot
+metadata$biomarker_status <- enrich[1,] > median(enrich[1,])
+sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
+sd 
+km <- survfit(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
+plot(km) 
 ```
