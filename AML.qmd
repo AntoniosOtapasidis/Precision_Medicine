@@ -239,16 +239,48 @@ dds <- DESeq(dds)
 
 # Store the results and display a table of the number of significantly differentially expresssed genes
 res <- as.data.frame(results(dds))
+res <- res %>% 
+  dplyr::filter(log2FoldChange > -10)
 cat("Significantly differentially expressed genes between responders and non-responders.\n\nThis number doesn't add up to the total number of genes in merged_counts because there are NA values in p-adj for some genes.\n")
 print(table(res$padj < 0.05))
 
 # Filter the significant genes and extract their names
 significant_genes <- res[!is.na(res$padj) & res$padj < 0.05, ]
 significant_gene_names <- rownames(significant_genes)
-print(sort(significant_gene_names))
+head(sort(significant_gene_names), 10)
 ```
 
 We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those. We will find the median expression and see if their expression is higher or lower. Because in this way we **COMPARE** samples, we need to use TPM values (or RPKM) and not raw counts, since we need to normalize for **SEQUENCING DEPTH**.
+
+## Volcano plot
+
+```{r}
+# Add a significance column for plotting
+res$significance <- "Not Significant"
+res$significance[res$padj < 0.05 & res$log2FoldChange > 0] <- "Upregulated"
+res$significance[res$padj < 0.05 & res$log2FoldChange < 0] <- "Downregulated"
+
+# Volcano plot
+volcano_plot <- ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+  geom_point(alpha = 0.8, size = 1.5) +  # Points for genes
+  scale_color_manual(values = c("Not Significant" = "grey", 
+                                "Upregulated" = "red", 
+                                "Downregulated" = "blue")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot",
+       x = "Log2 Fold Change",
+       y = "-Log10 Adjusted P-value",
+       color = "Significance") +
+  theme(legend.position = "top")
+# Select genes to label (e.g., top 10 most significant)
+top_genes <- res[order(res$padj), ][1:10, ]
+
+# Add labels to the plot
+volcano_plot <- volcano_plot +
+  geom_text(data = top_genes, aes(label = rownames(top_genes)), size = 3, vjust = -0.5)
+
+print(volcano_plot)
+```
 
 ## TPM calculation
 
@@ -322,6 +354,9 @@ tpm_matrix <- t(t(rpk) / corrector_counts)
 # Step 10: Convert TPM matrix back to a data frame
 tpm_counts <- as.data.frame(tpm_matrix)
 
+# Step 11: Log Normalize the tpm counts file.
+log_normalized_tpm <- log2(tpm_counts + 1)
+
 # Save the TPM values to a file
 write.table(tpm_counts, file = "tpm_counts.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
 ```
@@ -330,7 +365,7 @@ Back to stratifying patients on the expression of the significantly differential
 
 ```{r}
 # Since the significant genes were found based on the raw counts, we need first to check if they are present in the tpm dataframe
-common_significant_genes <- intersect(significant_gene_names, rownames(tpm_counts))
+common_significant_genes <- intersect(significant_gene_names, rownames(log_normalized_tpm))
 
 # We will now implement a trick to check all individual significant genes. We will loop through all genes and store the results in a matrix.
 
@@ -341,8 +376,8 @@ colnames(results_matrix) <- c("p_value", "is_significant")
 
 # Loop through each gene in common_significant_genes
 for (gene in common_significant_genes) {
-  # Extract the gene expression values from tpm_counts
-  gene_values <- as.matrix(tpm_counts)[rownames(tpm_counts) == gene, ]
+  # Extract the gene expression values from log_normalized_tpm
+  gene_values <- as.matrix(log_normalized_tpm)[rownames(log_normalized_tpm) == gene, ]
   
   # Calculate biomarker status based on median split for the current gene
   metadata$biomarker_status <- gene_values > median(gene_values, na.rm = TRUE)
@@ -375,10 +410,10 @@ We found some genes that can point out a statistical difference in the survival 
 ```{r}
 # Get only the 15 most significantly up regulated genes
 res2 <- res[res$padj < 0.05 & res$log2FoldChange > 0,]
-gene_set <- list(responder_set = rownames(res2[order(res2$padj),])[1:15])
+gene_set <- list(responder_set = rownames(res2[order(res2$padj),])[1:30])
 
 # Perform the sample wise gene set enrichment
-param <- ssgseaParam(as.matrix(tpm_counts), gene_set)
+param <- ssgseaParam(as.matrix(log_normalized_tpm), gene_set)
 enrich <- gsva(param)
 
 # Perform the log rank and produce the plot
@@ -387,6 +422,7 @@ sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = meta
 sd 
 km <- survfit(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
 plot(km) 
+
 ```
 
 ```{r}
