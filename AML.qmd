@@ -48,7 +48,7 @@ We can create two files:
 ```{r}
 # Creates the data frame "merged_counts"
 # Doesn't include gene_id 
-# Sum the isoforms approac
+# Sum the isoforms approach
 
 # Step 0: Define the output file path for merged_counts
 output_file <- "merged_counts.tsv"
