@@ -36,17 +36,18 @@ library(ggrepel)
 
 ```{r}
 metadata <- read_tsv("TARGET_AML_Clinical.tsv")
+head(metadata)
 ```
 
-## Counts data pre-processing
+## *Counts data pre-processing*
 
-Since we have different tsv files for every sample, we need to load them all, pre-process them and merge them.
+*Since we have different tsv files for every sample, we need to load them all, pre-process them and merge them.*
 
-We can create two files:
+*We can create two files:*
 
-1.  One with gene names as row names and samples as column names. Here, because multiple gene ids may map to the same gene name we must either sum those (approach A), keep the most expressed isoform (approach B) or another handling.
+1.  *One with gene names as row names and samples as column names. Here, because multiple gene ids may map to the same gene name we must either sum those (approach A), keep the most expressed isoform (approach B) or another handling.*
 
-2.  The same but with gene ids as row names, samples as column names plus another column with the gene names. Could be useful if we try CAR-T cell target evaluation for isoforms (maybe this is too much).
+2.  *The same but with gene ids as row names, samples as column names plus another column with the gene names. Could be useful if we try CAR-T cell target evaluation for isoforms (maybe this is too much).*
 
 ```{r}
 # Creates the data frame "merged_counts"
@@ -167,19 +168,23 @@ merged_counts_with_ids <- purrr::reduce(counts_dataframe_list_with_ids, full_joi
 print(merged_counts_with_ids)
 ```
 
-## Metadata pre-processing
+## *Metadata pre-processing*
 
-We care about the following variables:
+*We care about the following variables:*
 
--   Vital status (alive/dead)
+-   *Vital status (alive/dead)*
 
--   Overall survival time in days
+-   *Overall survival time in days*
 
--   MRD at end of course 1&2 (for stratifying patients)
+-   *MRD at end of course 1&2 (for stratifying patients)*
 
--   CR status at end of course 1&2 (for stratifying patients)
+-   *CR status at end of course 1&2 (for stratifying patients)*
 
--   Protocol
+-   *Protocol*
+
+```{r}
+colnames(metadata)
+```
 
 ```{r}
 # Keep only the variables we will work with
@@ -207,7 +212,285 @@ names(metadata)[names(metadata) == "Overall_Survival_Time_in_Days"] <- "Survival
 metadata$CR_status <- ifelse(metadata$CR_status == "CR", "Yes", "No")
 ```
 
-## Survival analysis
+```{r}
+metadata
+```
+
+## PCA on the data 
+
+```{r}
+# Load necessary libraries
+if (!requireNamespace("FactoMineR", quietly = TRUE)) install.packages("FactoMineR")
+if (!requireNamespace("ggplot2", quietly = TRUE)) install.packages("ggplot2")
+if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
+
+library(FactoMineR)
+library(ggplot2)
+library(dplyr)
+
+# Prepare the data
+# Remove non-numeric columns (gene_id and gene_name)
+expression_data <- merged_counts_with_ids[, -c(1:2)]
+
+# Transpose the matrix to make samples rows and genes columns
+expression_data <- t(as.matrix(expression_data))
+
+# Assign row names from sample IDs
+rownames(expression_data) <- colnames(merged_counts_with_ids)[-c(1:2)]
+
+# Replace infinite values with NA
+expression_data[is.infinite(expression_data)] <- NA
+
+# Replace NA with column mean
+for (i in 1:ncol(expression_data)) {
+  column <- expression_data[, i]
+  column[is.na(column)] <- mean(column, na.rm = TRUE)
+  expression_data[, i] <- column
+}
+
+# Standardize the data
+standardized_data <- scale(expression_data)
+
+# Remove non-numeric columns and transpose
+expression_data <- merged_counts_with_ids[, -c(1:2)]
+expression_data <- t(as.matrix(expression_data))
+
+# Assign row names from sample IDs
+rownames(expression_data) <- colnames(merged_counts_with_ids)[-c(1:2)]
+
+# Filter features based on variance
+variances <- apply(expression_data, 2, var)
+high_variance_features <- variances > 0.001  # Adjust threshold as needed
+expression_data <- expression_data[, high_variance_features]
+cat("Remaining features after variance filter: ", ncol(expression_data), "\n")
+
+# Standardize the data
+standardized_data <- scale(expression_data)
+
+# Perform PCA
+pca_result <- PCA(standardized_data, graph = FALSE)
+
+# Extract variance explained by the first two components
+explained_variance <- pca_result$eig[, 2]
+PC1_variance <- round(explained_variance[1], 2)
+PC2_variance <- round(explained_variance[2], 2)
+
+# Create a data frame for PCA results
+pca_data <- data.frame(
+  Sample = rownames(expression_data),
+  PC1 = pca_result$ind$coord[, 1],
+  PC2 = pca_result$ind$coord[, 2]
+)
+
+# Merge PCA results with metadata
+pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
+
+# Plot PCA stratified by CR_status
+ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
+  geom_point(size = 4) +
+  geom_text(vjust = -1, hjust = 1, size = 3) +
+  ggtitle("PCA Stratified by CR_status (Filtered Data)") +
+  xlab(paste0("Principal Component 1 (", PC1_variance, "% variance explained)")) +
+  ylab(paste0("Principal Component 2 (", PC2_variance, "% variance explained)")) +
+  scale_color_discrete(name = "CR Status") +
+  theme_minimal()
+
+
+
+```
+
+```{r}
+cat("Dimensions of expression_data: ", dim(expression_data), "\n")
+
+```
+
+```{r}
+View(metadata)
+```
+
+## *We have to take account for the batch effects. We don t know If there are any so we are going to use the SVA to account  for latent batch effects* \https*://biodatascience.github.io/compbio/dist/sva.html*
+
+```{r}
+
+View(merged_counts_with_ids)
+```
+
+```{r}
+colnames(merged_counts_with_ids)
+
+```
+
+```{r}
+# Ensure gene_name is unique
+merged_counts_with_ids$gene_name <- make.unique(as.character(merged_counts_with_ids$gene_name))
+
+# Set row names to the "gene_name" column
+rownames(merged_counts_with_ids) <- merged_counts_with_ids$gene_name
+
+# Drop the "gene_id" and "gene_name" columns
+merged_counts_with_ids <- merged_counts_with_ids[, !colnames(merged_counts_with_ids) %in% c("gene_id", "gene_name")]
+
+# Check the result
+head(merged_counts_with_ids)  # Display the first few rows
+
+```
+
+```{r}
+length(colnames(merged_counts_with_ids))
+length(rownames(metadata))
+
+```
+
+```{r}
+# Check lengths to ensure they match
+if (length(colnames(merged_counts_with_ids)) == length(rownames(metadata))) {
+  # Replace column names of merged_counts_with_ids with row names of metadata
+  colnames(merged_counts_with_ids) <- rownames(metadata)
+} else {
+  stop("The number of columns in merged_counts_with_ids does not match the number of rows in metadata.")
+}
+
+# Verify the alignment
+all(colnames(merged_counts_with_ids) == rownames(metadata))
+
+```
+
+```{r}
+colnames(merged_counts_with_ids)
+rownames(metadata)
+```
+
+```{r}
+# DESeq is performed ALWAYS with raw counts
+dds <- DESeqDataSetFromMatrix(countData = merged_counts, colData = metadata, design = ~ CR_status)
+
+# Pre-filtering: remove rows with low gene counts (keep rows that have at least 10 reads total) - recommended but not mandatory step
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep, ]
+
+# Run DESeq
+dds <- DESeq(dds)
+```
+
+```{r}
+#We estimate the library size correction and save the normalized counts matrix:
+
+dds <- estimateSizeFactors(dds)
+norm.cts <- counts(dds, normalized=TRUE)
+```
+
+```{r}
+# Load necessary library
+library(sva)
+
+# Ensure 'CR_status' and any other relevant variables are factors
+colData(dds)$CR_status <- factor(colData(dds)$CR_status)
+
+# If you have a 'batch' variable, ensure it is a factor as well
+# For example:
+# colData(dds)$batch <- factor(colData(dds)$batch)
+
+# Extract normalized counts
+norm.cts <- counts(dds, normalized=TRUE)
+
+# Filter rows with all zero counts
+norm.cts <- norm.cts[rowSums(norm.cts) > 0, ]
+
+# Create design matrices
+# Full model includes CR_status (the grouping variable)
+mm <- model.matrix(~ CR_status, colData(dds))
+
+# Null model includes only the intercept
+mm0 <- model.matrix(~ 1, colData(dds))
+
+# Run svaseq
+fit <- svaseq(norm.cts, mod=mm, mod0=mm0, n.sv=2)
+
+# Inspect the result
+fit
+
+
+```
+
+## Based on the SVA we identified 2 surrogated variables
+
+Plot
+
+```{r}
+library(rafalib)
+
+# Set up plotting area
+bigpar()
+
+# Convert CR_status to integers for plotting shapes
+colData(dds)$CR_status.int <- as.integer(colData(dds)$CR_status)
+
+# Plot the first two surrogate variables (SV1 and SV2)
+plot(
+  fit$sv[, 1:2],
+  col = "black",                    # Single color (no batch variable)
+  pch = colData(dds)$CR_status.int, # Shape determined by CR_status
+  cex = 2,                          # Point size
+  xlab = "SV1",
+  ylab = "SV2"
+)
+
+# Add a legend for CR_status
+legend(
+  "topright",
+  legend = levels(colData(dds)$CR_status), # Levels of CR_status
+  pch = unique(colData(dds)$CR_status.int), # Match shapes
+  col = "black",                           # Single color
+  cex = 0.8,
+  ncol = 2,
+  title = "CR_status"
+)
+
+
+```
+
+-   **Separation by `CR_status`:**
+
+    -   The two shapes (`△` for "No" and `○` for "Yes") seem scattered and overlap significantly. There isn\'t a clear clustering of points based on `CR_status`, which may suggest that the surrogate variables are capturing other hidden variations (not necessarily batch effects).
+
+-   **Batch Effects Likely Absent:**
+
+    -   If batch effects were strongly influencing the data, you would typically see clusters or groupings that align with the batches (if batch variables existed). Since you don't have a `batch` variable and the plot shows no distinct clustering, batch effects are not apparent.
+
+    ## Surrogate Variables by Sample Order Plot:
+
+    ```{r}
+    plot(1:nrow(fit$sv), fit$sv[, 1], type = "b", xlab = "Sample Index", ylab = "SV1")
+
+    ```
+
+```{=html}
+<!-- -->
+```
+-   **Fluctuations Without Clear Clusters:**
+
+    -   The surrogate variable (SV1) fluctuates across sample indices but doesn't show systematic clustering or a clear trend that could be indicative of batch effects.
+
+-   **No Apparent Batch-Like Patterns:**
+
+    -   If batch effects were present, you might expect:
+
+        -   Distinct blocks or clusters of samples where SV1 values differ significantly.
+
+        -   Systematic increases or decreases across contiguous sample indices (e.g., sequencing batches processed sequentially).
+
+## Examine Variance Explained by Surrogate Variables 
+
+```{r}
+summary(prcomp(fit$sv))
+```
+
+```{r}
+plot(as.numeric(colData(dds)$Vital_Status), fit$sv[, 1], xlab = "Vital_Status", ylab = "SV1")
+
+```
+
+## *Survival analysis*
 
 ```{r}
 # We want to stratify patients based on "MRD" or "CR", so we first need to convert them to 'factor'
@@ -230,11 +513,11 @@ plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability"
 text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "red", cex = 1.2)
 ```
 
-We don't find a **p-value** \< 0.05, which means the difference is not significant (p-value = 0.6 for MRD and 0.09 for CR).
+*We don't find a **p-value** \< 0.05, which means the difference is not significant (p-value = 0.6 for MRD and 0.09 for CR).*
 
-## DESeq
+## *DESeq*
 
-We will perform differential gene expression analysis in order to find genes differentially expressed between responders and non-responders.
+*We will perform differential gene expression analysis in order to find genes differentially expressed between responders and non-responders.*
 
 ```{r}
 # Create the DESeq object and run DESeq
@@ -261,9 +544,9 @@ significant_gene_names <- rownames(significant_genes)
 head(sort(significant_gene_names), 10)
 ```
 
-We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those. We will find the median expression and see if their expression is higher or lower. Because in this way we **COMPARE** samples, we need to use TPM values (or RPKM) and not raw counts, since we need to normalize for **SEQUENCING DEPTH**.
+*We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those. We will find the median expression and see if their expression is higher or lower. Because in this way we **COMPARE** samples, we need to use TPM values (or RPKM) and not raw counts, since we need to normalize for **SEQUENCING DEPTH**.*
 
-## Volcano plot
+## *Volcano plot*
 
 ```{r}
 # Add a significance column for plotting
@@ -303,9 +586,9 @@ volcano_plot <- volcano_plot +
 print(volcano_plot)
 ```
 
-## TPM calculation
+## *TPM calculation*
 
-We don't have the TPM values (we actually have them, but for the unstranded values). First, we need the **GENE LENGTH** for that, which we don't have. We can try to get this info from Ensembl.
+*We don't have the TPM values (we actually have them, but for the unstranded values). First, we need the **GENE LENGTH** for that, which we don't have. We can try to get this info from Ensembl.*
 
 ```{r}
 # Step 1: Connect to Ensembl
@@ -333,15 +616,15 @@ gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc
 print(gene_lengths)
 ```
 
-Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
+*Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:*
 
-1.  Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length
+1.  *Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length*
 
-2.  Calculate scaling factors: Sum all RPK values per sample
+2.  *Calculate scaling factors: Sum all RPK values per sample*
 
-3.  Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)
+3.  *Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)*
 
-4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
+4.  *Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.*
 
 ```{r}
 # Step 1: Identify common gene names between counts data and gene lengths
@@ -385,7 +668,7 @@ write.table(tpm_counts, file = "tpm_counts.tsv", sep = "\t", quote = FALSE, row.
 write.table(log_normalized_tpm, file = "log_normalized_tpm.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
 ```
 
-Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.
+*Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.*
 
 ```{r}
 # Since the significant genes were found based on the raw counts, we need first to check if they are present in the tpm dataframe - we lose some genes here
@@ -435,9 +718,9 @@ print(results_df)
 # After that you can create a Kaplan-Meier plot for the genes (not displayed here)
 ```
 
-## ssGSEA
+## *ssGSEA*
 
-We found some genes that can point out a statistical difference in the survival of the two groups (higher or lower expression of a gene). But genes rarely work individually in nature, so let's take a multivariate approach, that is, define a group of genes. We will start by selecting the e.g. 15 most significantly up regulated genes in responders, calculate the sample wise gene set enrichment and split again the patients into two groups.
+*We found some genes that can point out a statistical difference in the survival of the two groups (higher or lower expression of a gene). But genes rarely work individually in nature, so let's take a multivariate approach, that is, define a group of genes. We will start by selecting the e.g. 15 most significantly up regulated genes in responders, calculate the sample wise gene set enrichment and split again the patients into two groups.*
 
 ```{r}
 # Get only the 15 most significantly up regulated genes
