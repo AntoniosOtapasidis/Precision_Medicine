@@ -31,6 +31,7 @@ library(ggplot2)
 library(dplyr)
 library(edgeR)
 library(purrr)
+library(ggrepel)
 ```
 
 ```{r}
@@ -178,6 +179,8 @@ We care about the following variables:
 
 -   CR status at end of course 1&2 (for stratifying patients)
 
+-   Protocol
+
 ```{r}
 # Keep only the variables we will work with
 metadata <- metadata[, c("TARGET USI", "Vital Status", "Overall Survival Time in Days", "MRD at end of course 1", "CR status at end of course 1", "Protocol")]
@@ -269,18 +272,28 @@ volcano_plot <- ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = si
                                 "Upregulated" = "red", 
                                 "Downregulated" = "blue")) +
   theme_minimal() +
-  labs(title = "Volcano Plot",
+  labs(title = "",
        x = "Log2 Fold Change",
        y = "-Log10 Adjusted P-value",
        color = "Significance") +
   theme(legend.position = "top")
-# Select genes to label (e.g., top 10 most significant)
-top_genes <- res[order(res$padj), ][1:10, ]
 
-# Add labels to the plot
+# Step 1: Subset for upregulated and downregulated genes
+upregulated_genes <- res[res$significance == "Upregulated", ]    # Select genes labeled as Upregulated
+downregulated_genes <- res[res$significance == "Downregulated", ]  # Select genes labeled as Downregulated
+
+# Step 2: Sort by significance (adjusted p-value) and select the top 10 from each
+top_upregulated_genes <- upregulated_genes[order(upregulated_genes$padj), ][1:10, ]
+top_downregulated_genes <- downregulated_genes[order(downregulated_genes$padj), ][1:10, ]
+
+# Step 3: Combine the selected genes for labeling
+top_genes <- rbind(top_upregulated_genes, top_downregulated_genes)
+
+# Add labels to the plot for the selected top genes
 volcano_plot <- volcano_plot +
-  geom_text(data = top_genes, aes(label = rownames(top_genes)), size = 3, vjust = -0.5)
+  geom_text_repel(data = top_genes, aes(label = rownames(top_genes)), size = 3, vjust = -0.5, max.overlaps = Inf)
 
+# Print the volcano plot
 print(volcano_plot)
 ```
 
