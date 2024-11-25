@@ -183,10 +183,6 @@ print(merged_counts_with_ids)
 -   *Protocol*
 
 ```{r}
-colnames(metadata)
-```
-
-```{r}
 # Keep only the variables we will work with
 metadata <- metadata[, c("TARGET USI", "Vital Status", "Overall Survival Time in Days", "MRD at end of course 1", "CR status at end of course 1", "Protocol")]
 
@@ -213,59 +209,60 @@ metadata$CR_status <- ifelse(metadata$CR_status == "CR", "Yes", "No")
 ```
 
 ```{r}
-metadata
+colnames(metadata)
 ```
 
-## PCA on the data 
+## PCA on the data
 
 ```{r}
-# Load necessary libraries
-if (!requireNamespace("FactoMineR", quietly = TRUE)) install.packages("FactoMineR")
-if (!requireNamespace("ggplot2", quietly = TRUE)) install.packages("ggplot2")
-if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
-
-library(FactoMineR)
-library(ggplot2)
-library(dplyr)
-
 # Prepare the data
 # Remove non-numeric columns (gene_id and gene_name)
-expression_data <- merged_counts_with_ids[, -c(1:2)]
+# Step 1: Extract expression data and transpose
+expression_data <- t(as.matrix(merged_counts))
 
-# Transpose the matrix to make samples rows and genes columns
-expression_data <- t(as.matrix(expression_data))
+# Step 2: Assign sample IDs as row names
+rownames(expression_data) <- colnames(merged_counts)
+rownames(expression_data) <- gsub("\\.", "-", rownames(expression_data))
 
-# Assign row names from sample IDs
-rownames(expression_data) <- colnames(merged_counts_with_ids)[-c(1:2)]
-
-# Replace infinite values with NA
+# Step 3: Replace infinite values with NA
 expression_data[is.infinite(expression_data)] <- NA
 
-# Replace NA with column mean
-for (i in 1:ncol(expression_data)) {
-  column <- expression_data[, i]
-  column[is.na(column)] <- mean(column, na.rm = TRUE)
-  expression_data[, i] <- column
+# Step 4: Replace NA with column mean
+for (i in seq_len(ncol(expression_data))) {
+  expression_data[is.na(expression_data[, i]), i] <- mean(expression_data[, i], na.rm = TRUE)
 }
 
-# Standardize the data
-standardized_data <- scale(expression_data)
-
-# Remove non-numeric columns and transpose
-expression_data <- merged_counts_with_ids[, -c(1:2)]
-expression_data <- t(as.matrix(expression_data))
-
-# Assign row names from sample IDs
-rownames(expression_data) <- colnames(merged_counts_with_ids)[-c(1:2)]
-
-# Filter features based on variance
-variances <- apply(expression_data, 2, var)
-high_variance_features <- variances > 0.001  # Adjust threshold as needed
+# Step 5: Filter features based on variance
+variances <- apply(expression_data, 2, var, na.rm = TRUE)
+threshold <- 0.0001  # Adjust as per your dataset
+high_variance_features <- variances > threshold
 expression_data <- expression_data[, high_variance_features]
-cat("Remaining features after variance filter: ", ncol(expression_data), "\n")
 
-# Standardize the data
+# Output remaining features
+cat("Remaining features after variance filter:", ncol(expression_data), "\n")
+
+# Step 6: Standardize the data
 standardized_data <- scale(expression_data)
+
+# Final checks
+cat("Dimension of standardized data:", dim(standardized_data), "\n")
+
+```
+
+```{r}
+# Check alignment
+all(rownames(expression_data) %in% metadata$TARGET_USI)  # Should return TRUE
+
+```
+
+```{r}
+# Install FactoMineR if not already installed
+if (!requireNamespace("FactoMineR", quietly = TRUE)) {
+  install.packages("FactoMineR")
+}
+
+# Load the FactoMineR package
+library(FactoMineR)
 
 # Perform PCA
 pca_result <- PCA(standardized_data, graph = FALSE)
@@ -288,15 +285,49 @@ pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 # Plot PCA stratified by CR_status
 ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
   geom_point(size = 4) +
-  geom_text(vjust = -1, hjust = 1, size = 3) +
+  geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
   ggtitle("PCA Stratified by CR_status (Filtered Data)") +
   xlab(paste0("Principal Component 1 (", PC1_variance, "% variance explained)")) +
   ylab(paste0("Principal Component 2 (", PC2_variance, "% variance explained)")) +
   scale_color_discrete(name = "CR Status") +
   theme_minimal()
+```
+
+## Kendall tau
+
+```{r}
+# Step 1: Rank transformation of the data
+ranked_data <- apply(expression_data, 2, rank)
+
+```
+
+```{r}
+# Step 2: Calculate Kendall Tau distance
+kendall_tau_dist <- 1 - cor(ranked_data, method = "kendall")
+
+
+```
+
+```{r}
+# Replace dots with hyphens in rownames of standardized_data
+rownames(standardized_data) <- gsub("\\.", "-", rownames(standardized_data))
+
+# Check alignment again
+if (!all(rownames(metadata) %in% rownames(standardized_data))) {
+  cat("Samples still do not fully align. Missing samples:\n")
+  missing_samples <- setdiff(rownames(metadata), rownames(standardized_data))
+  print(missing_samples)
+} else {
+  cat("Sample names are now aligned.\n")
+}
 
 
 
+```
+
+```{r}
+
+rownames(standardized_data)
 ```
 
 ```{r}
@@ -308,7 +339,7 @@ cat("Dimensions of expression_data: ", dim(expression_data), "\n")
 View(metadata)
 ```
 
-## *We have to take account for the batch effects. We don t know If there are any so we are going to use the SVA to account  for latent batch effects* \https*://biodatascience.github.io/compbio/dist/sva.html*
+## *We have to take account for the batch effects. We don t know If there are any so we are going to use the SVA to account for latent batch effects* \https://biodatascience.github.io/compbio/dist/sva.html\*
 
 ```{r}
 
@@ -397,14 +428,14 @@ norm.cts <- counts(dds, normalized=TRUE)
 norm.cts <- norm.cts[rowSums(norm.cts) > 0, ]
 
 # Create design matrices
-# Full model includes CR_status (the grouping variable)
+# Full model includes known biological covariates
 mm <- model.matrix(~ CR_status, colData(dds))
 
 # Null model includes only the intercept
 mm0 <- model.matrix(~ 1, colData(dds))
 
-# Run svaseq
-fit <- svaseq(norm.cts, mod=mm, mod0=mm0, n.sv=2)
+# Run SVA to estimate surrogate variables
+fit <- svaseq(norm.cts, mod = mm, mod0 = mm0)
 
 # Inspect the result
 fit
@@ -412,7 +443,7 @@ fit
 
 ```
 
-## Based on the SVA we identified 2 surrogated variables
+## Based on the SVA we identified 6 surrogated variables
 
 Plot
 
@@ -449,9 +480,11 @@ legend(
 
 ```
 
+-   
+
 -   **Separation by `CR_status`:**
 
-    -   The two shapes (`△` for "No" and `○` for "Yes") seem scattered and overlap significantly. There isn\'t a clear clustering of points based on `CR_status`, which may suggest that the surrogate variables are capturing other hidden variations (not necessarily batch effects).
+    -   The two shapes (`△` for "No" and `○` for "Yes") seem scattered and overlap significantly. There isn't a clear clustering of points based on `CR_status`, which may suggest that the surrogate variables are capturing other hidden variations (not necessarily batch effects).
 
 -   **Batch Effects Likely Absent:**
 
@@ -464,9 +497,27 @@ legend(
 
     ```
 
-```{=html}
 <!-- -->
+
+```{r}
+# PCA on surrogate variables
+# Calculate variance explained by each PC
+explained_variance <- round(100 * pca_sv$sdev^2 / sum(pca_sv$sdev^2), 2)
+
+# Create axis labels with explained variance
+x_label <- paste0("PC1 (", explained_variance[1], "% Variance)")
+y_label <- paste0("PC2 (", explained_variance[2], "% Variance)")
+
+# Visualize PCA with explained variance in axis labels
+ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status)) +
+  geom_point(size = 3) +
+  labs(title = "PCA of Surrogate Variables", x = x_label, y = y_label) +
+  theme_minimal()
+
+
+
 ```
+
 -   **Fluctuations Without Clear Clusters:**
 
     -   The surrogate variable (SV1) fluctuates across sample indices but doesn't show systematic clustering or a clear trend that could be indicative of batch effects.
@@ -479,14 +530,202 @@ legend(
 
         -   Systematic increases or decreases across contiguous sample indices (e.g., sequencing batches processed sequentially).
 
-## Examine Variance Explained by Surrogate Variables 
+## Examine Variance Explained by Surrogate Variables
 
 ```{r}
 summary(prcomp(fit$sv))
 ```
 
 ```{r}
-plot(as.numeric(colData(dds)$Vital_Status), fit$sv[, 1], xlab = "Vital_Status", ylab = "SV1")
+# Design matrix with CR_status and surrogate variables
+design <- cbind(mm, fit$sv)
+
+```
+
+Fit limma to the SVA data
+
+```{r}
+library(limma)
+fit_limma <- lmFit(norm.cts, design)
+
+```
+
+```{r}
+fit_limma <- eBayes(fit_limma)
+
+# Extract top differentially expressed genes
+topTable(fit_limma, coef = "CR_statusYes", adjust.method = "BH")
+
+```
+
+```{r}
+# Assuming your table is stored in a data frame called 'results'
+# Add a column for significance based on adjusted p-value and logFC thresholds
+results$Significant <- ifelse(results$adj.P.Val < 0.05 & abs(results$logFC) > 1, "Yes", "No")
+
+# Load ggplot2 for visualization
+library(ggplot2)
+
+# Create the volcano plot
+ggplot(results, aes(x = logFC, y = -log10(P.Value), color = Significant)) +
+  geom_point(alpha = 0.6, size = 2) +  # Scatter plot with transparency
+  scale_color_manual(values = c("No" = "gray", "Yes" = "red")) +  # Color for significant points
+  labs(
+    title = "Volcano Plot",
+    x = "Log2 Fold Change (logFC)",
+    y = "-log10 P-Value"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+
+```
+
+```{r}
+# Filter significant genes based on thresholds
+significant_genes <- results[results$adj.P.Val < 0.05 & abs(results$logFC) > 1, ]
+
+# Extract the gene names (assuming the gene names are stored in a column called "Gene")
+significant_gene_names <- rownames(significant_genes)  # Or use `results$Gene` if there's a "Gene" column
+
+# Print the significant gene names
+print(significant_gene_names)
+
+# If you want to save the gene names to a file:
+write.table(significant_gene_names, file = "significant_genes.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+```
+
+Limma assuming every sample is a batch.... I did nt like it
+
+```{r}
+expr_matrix <- merged_counts  # Transpose to genes × samples
+rownames(expr_matrix)
+# Replace 'CR_status' with the actual column name in metadata
+metadata$batch <- seq_len(nrow(metadata))  # Assign unique batch IDs
+metadata
+```
+
+colnames(expr_matrix)
+
+```{r}
+# Replace periods (.) with hyphens (-) in column names of expr_matrix
+colnames(expr_matrix) <- gsub("\\.", "-", colnames(expr_matrix))
+
+# Check the result
+head(colnames(expr_matrix))
+# Reorder metadata to match the columns of expr_matrix
+metadata <- metadata[match(colnames(expr_matrix), metadata$TARGET_USI), ]
+
+# Continue with batch correction, scaling, PCA, etc.
+
+```
+
+```{r}
+# Load required library
+library(limma)
+
+# Ensure batch is a factor
+metadata$batch <- as.factor(metadata$batch)
+
+# Optional: Define biological covariates to preserve (e.g., CR_status)
+
+# Perform batch correction
+limma_corrected <- removeBatchEffect(
+  expr_matrix,
+  batch = metadata$batch
+)
+
+
+# View corrected data
+head(limma_corrected)
+
+```
+
+```{r}
+# Load necessary library
+library(caret) # for nearZeroVar function
+
+# Identify near-zero variance columns
+nzv <- nearZeroVar(filtered_matrix, saveMetrics = TRUE)
+
+# Retain only columns with non-zero variance
+filtered_matrix <- filtered_matrix[, !nzv$nzv]
+
+# Check the dimensions of the filtered matrix
+cat("Filtered matrix dimensions after removing near-zero variance columns:", dim(filtered_matrix), "\n")
+
+# Scale the filtered matrix explicitly
+scaled_matrix <- scale(filtered_matrix)
+
+# Check dimensions of the scaled matrix
+cat("Scaled matrix dimensions:", dim(scaled_matrix), "\n")
+
+# Perform PCA
+if (nrow(scaled_matrix) > ncol(scaled_matrix)) {
+  scaled_matrix <- t(scaled_matrix)
+}
+
+pca_result <- prcomp(scaled_matrix, center = TRUE, scale. = FALSE) # No need to scale again
+
+# View PCA summary
+summary(pca_result)
+
+# Extract PCA scores for visualization
+pca_scores <- as.data.frame(pca_result$x)
+
+# Plot the first two principal components
+# Calculate variance explained by each PC
+explained_variance <- round(100 * pca_result$sdev^2 / sum(pca_result$sdev^2), 2)
+
+# Create labels with variance explained
+x_label <- paste0("PC1 (", explained_variance[1], "% Variance)")
+y_label <- paste0("PC2 (", explained_variance[2], "% Variance)")
+
+# Plot the first two principal components
+library(ggplot2)
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = metadata$CR_status)) +
+  geom_point(size = 3) +
+  labs(
+    title = "PCA Plot",
+    x = x_label,
+    y = y_label
+  ) +
+  theme_minimal()
+
+
+
+```
+
+```{r}
+# Identify columns where all rows are zero or constant
+constant_columns <- apply(merged_data[, -which(names(merged_data) %in% c("sample_id", "CR_status"))], 2, function(x) sd(x) == 0)
+
+# Remove constant columns
+merged_data_cleaned <- merged_data[, !constant_columns]
+
+# Scale the cleaned data (excluding 'sample_id' and 'CR_status' columns)
+merged_data_scaled <- scale(merged_data_cleaned[, -which(names(merged_data_cleaned) %in% c("sample_id", "CR_status"))])
+
+# Perform PCA
+pca_result <- prcomp(merged_data_scaled, center = TRUE, scale. = TRUE)
+
+# Summary of PCA to understand variance explained
+summary(pca_result)
+
+# Create a PCA dataframe with the results
+pca_data <- data.frame(pca_result$x)  # Extract PCA scores
+pca_data$CR_status <- merged_data$CR_status  # Add CR_status for coloring
+
+# Plotting the PCA
+library(ggplot2)
+ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status)) +
+  geom_point(size = 3) +
+  labs(title = "PCA of Batch Corrected Data with CR Status",
+       x = paste("PC1 - ", round(100 * summary(pca_result)$importance[2, 1]), "% variance"),
+       y = paste("PC2 - ", round(100 * summary(pca_result)$importance[2, 2]), "% variance")) +
+  theme_minimal() +
+  scale_color_manual(values = c("red", "blue"))  # Customize color palette (adjust as needed)
 
 ```
 
