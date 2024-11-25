@@ -1,0 +1,210 @@
+**Year of Diagnosis**
+
+```{r}
+# Summarize Year of Diagnosis
+table(metadata$`Year of Diagnosis`)
+
+# Summarize Year of Last Follow-Up
+table(metadata$`Year of Last Follow Up`)
+
+# Visualize distribution
+ggplot(metadata, aes(x = `Year of Diagnosis`, fill = `Vital Status`)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(title = "Distribution of Year of Diagnosis by Vital Status", x = "Year of Diagnosis", y = "Frequency")
+
+```
+
+I think we could remove years of diagnosis from 2008-2010 and years of last follow-up from 2005-2011
+
+**Protocol**
+
+```{r}
+# View unique protocols
+unique(metadata$Protocol)
+
+# Count the occurrences of each protocol
+table(metadata$Protocol)
+
+# Visualize distribution as a barplot
+barplot(table(metadata$Protocol), 
+        main = "Distribution of Protocols", 
+        xlab = "Protocol", 
+        ylab = "Frequency", 
+        col = "lightblue", las = 2)
+
+```
+
+\[1\] "AAML1031" "AAML03P1" "AAML0531" NA
+
+AAML03P1 : 3 samples AAML0531 : 5 samples AAML1031 : 1061 samples
+
+First 2 protocols do not have enough expression on the data
+
+**Gender/Race/Ethnicity**
+
+```{r}
+# Gender distribution
+table(metadata$Gender)
+
+# Race distribution
+table(metadata$Race)
+
+# Ethnicity distribution
+table(metadata$Ethnicity)
+
+```
+
+```{r}
+# Gender distribution
+ggplot(metadata, aes(x = Gender)) +
+  geom_bar(fill = "lightblue") +
+  theme_minimal() +
+  labs(title = "Gender Distribution", x = "Gender", y = "Count")
+
+# Race distribution
+ggplot(metadata, aes(x = Race)) +
+  geom_bar(fill = "lightgreen") +
+  theme_minimal() +
+  labs(title = "Race Distribution", x = "Race", y = "Count")
+
+# Ethnicity distribution
+ggplot(metadata, aes(x = Ethnicity)) +
+  geom_bar(fill = "lightcoral") +
+  theme_minimal() +
+  labs(title = "Ethnicity Distribution", x = "Ethnicity", y = "Count")
+
+```
+
+\
+
+```{r}
+# Define your sample IDs
+sample_ids <- c("TARGET-20-PASIEJ", "TARGET-20-PAUVBS", "TARGET-20-PAUVGD", "TARGET-20-PAUVXU", 
+                "TARGET-20-PAUWCF", "TARGET-20-PAUXLK", "TARGET-20-PAUXNM", "TARGET-20-PAUYDT", 
+                "TARGET-20-PAVAGA", "TARGET-20-PAVFYL", "TARGET-20-PAVLKB", "TARGET-20-PAVLWY", 
+                "TARGET-20-PAVSWX", "TARGET-20-PAWCAW", "TARGET-20-PAWFZT", "TARGET-20-PAWTWW", 
+                "TARGET-20-PAWXZJ", "TARGET-20-PAWYTW", "TARGET-20-PAXGVH", "TARGET-20-PAXJVE")
+
+# Subset the metadata for the 20 samples
+subset_metadata <- metadata[metadata$`TARGET USI` %in% sample_ids, ]
+
+# Check the resulting data
+print(subset_metadata)
+
+```
+
+```{r}
+# Summarize key batch-related variables
+table(subset_metadata$Protocol)
+table(subset_metadata$`Year of Diagnosis`)
+table(subset_metadata$Gender)
+table(subset_metadata$Race)
+table(subset_metadata$Ethnicity)
+
+```
+
+```{r}
+# Gender distribution
+ggplot(subset_metadata, aes(x = Gender)) +
+  geom_bar(fill = "lightblue") +
+  theme_minimal() +
+  labs(title = "Gender Distribution (20 Samples)", x = "Gender", y = "Count")
+
+# Protocol distribution
+ggplot(subset_metadata, aes(x = Protocol)) +
+  geom_bar(fill = "lightgreen") +
+  theme_minimal() +
+  labs(title = "Protocol Distribution (20 Samples)", x = "Protocol", y = "Count")
+
+# Race distribution
+ggplot(subset_metadata, aes(x = Race)) +
+  geom_bar(fill = "lightcoral") +
+  theme_minimal() +
+  labs(title = "Race Distribution (20 Samples)", x = "Race", y = "Count")
+
+# Ethnicity distribution
+ggplot(subset_metadata, aes(x = Ethnicity)) +
+  geom_bar(fill = "lightgoldenrod") +
+  theme_minimal() +
+  labs(title = "Ethnicity Distribution (20 Samples)", x = "Ethnicity", y = "Count")
+
+```
+
+```{r}
+# Bar plot for Year of Diagnosis
+ggplot(subset_metadata, aes(x = as.factor(`Year of Diagnosis`))) +
+  geom_bar(fill = "lightblue") +
+  theme_minimal() +
+  labs(title = "Year of Diagnosis Distribution (20 Samples)",
+       x = "Year of Diagnosis",
+       y = "Count")
+
+```
+
+\
+\
+1. Year of Last Follow-Up
+
+```{r}
+# Bar plot for Year of Last Follow-Up
+ggplot(subset_metadata, aes(x = as.factor(`Year of Last Follow Up`))) +
+  geom_bar(fill = "lightblue") +
+  theme_minimal() +
+  labs(title = "Year of Last Follow-Up Distribution (20 Samples)", 
+       x = "Year of Last Follow-Up", 
+       y = "Count")
+
+```
+
+2.  Protocol
+
+```{r}
+# Bar plot for Protocol
+ggplot(subset_metadata, aes(x = Protocol)) +
+  geom_bar(fill = "lightgreen") +
+  theme_minimal() +
+  labs(title = "Protocol Distribution (20 Samples)", 
+       x = "Protocol", 
+       y = "Count")
+
+```
+
+3.  Vital Status
+
+```{r}
+# Bar plot for Vital Status
+ggplot(subset_metadata, aes(x = `Vital Status`)) +
+  geom_bar(fill = "lightcoral") +
+  theme_minimal() +
+  labs(title = "Vital Status Distribution (20 Samples)", 
+       x = "Vital Status", 
+       y = "Count")
+
+```
+
+4.  CR Status
+
+```{r}
+# Bar plot for CR Status
+ggplot(subset_metadata, aes(x = `CR status at end of course 1`)) +
+  geom_bar(fill = "lightgoldenrod") +
+  theme_minimal() +
+  labs(title = "CR Status Distribution (20 Samples)", 
+       x = "CR Status", 
+       y = "Count")
+
+```
+
+5.  MRD Status
+
+```{r}
+# Bar plot for MRD Status
+ggplot(subset_metadata, aes(x = `MRD at end of course 1`)) +
+  geom_bar(fill = "lightpink") +
+  theme_minimal() +
+  labs(title = "MRD Status Distribution (20 Samples)", 
+       x = "MRD Status", 
+       y = "Count")
+
+```
