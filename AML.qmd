@@ -118,7 +118,7 @@ if (file.exists(output_file)) {
   counts_dataframe_list <- furrr::future_map(counts_files, process_file)
 
   # Step 6: Merge all dataframes in the list by "gene_name"
-  merged_counts <- reduce(counts_dataframe_list, full_join, by = "gene_name")
+  merged_counts <- purrr::reduce(counts_dataframe_list, full_join, by = "gene_name")
 
   # Step 7: Make gene_names the row names
   merged_counts <- merged_counts |> column_to_rownames(var = "gene_name")
