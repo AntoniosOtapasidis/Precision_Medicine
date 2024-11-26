@@ -941,11 +941,11 @@ significant_genes_with_logfc <- res[significant_gene_names, ]
 
 # Keep only upregulated genes (log2FoldChange > 0) and order by adjusted p-value
 res3 <- significant_genes_with_logfc %>%
-  filter(log2FoldChange > 0) %>%   # Filter for upregulated genes
+  #filter(log2FoldChange > 0) %>%   # Filter for upregulated genes
   arrange(padj)                    # Sort by adjusted p-value
 
 # Select the top 15 most significant genes
-gene_set <- list(responder_set = rownames(res3)[1:15])
+gene_set <- list(responder_set = rownames(res3))
 
 # Perform the sample wise gene set enrichment
 param <- ssgseaParam(as.matrix(log_normalized_tpm), gene_set)
