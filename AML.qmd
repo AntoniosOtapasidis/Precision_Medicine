@@ -20,6 +20,8 @@ if (!requireNamespace("edgeR", quietly = TRUE))
   BiocManager::install("edgeR", update = TRUE, ask = FALSE)
 if (!requireNamespace("FactoMineR", quietly = TRUE)) 
   install.packages("FactoMineR")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("sva")
 library(tidyverse)
 library(readr)
 library(biomaRt)
@@ -38,6 +40,8 @@ library(ggrepel)
 library(FactoMineR)
 library(sva)
 library(rafalib)
+library(limma)
+library(caret)
 ```
 
 ```{r}
@@ -465,25 +469,6 @@ legend(
 
     ```
 
-```{r}
-# PCA on surrogate variables
-# Calculate variance explained by each PC
-explained_variance <- round(100 * pca_sv$sdev^2 / sum(pca_sv$sdev^2), 2)
-
-# Create axis labels with explained variance
-x_label <- paste0("PC1 (", explained_variance[1], "% Variance)")
-y_label <- paste0("PC2 (", explained_variance[2], "% Variance)")
-
-# Visualize PCA with explained variance in axis labels
-ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status)) +
-  geom_point(size = 3) +
-  labs(title = "PCA of Surrogate Variables", x = x_label, y = y_label) +
-  theme_minimal()
-
-
-
-```
-
 -   **Fluctuations Without Clear Clusters:**
 
     -   The surrogate variable (SV1) fluctuates across sample indices but doesn't show systematic clustering or a clear trend that could be indicative of batch effects.
@@ -511,7 +496,6 @@ design <- cbind(mm, fit$sv)
 Fit limma to the SVA data
 
 ```{r}
-library(limma)
 fit_limma <- lmFit(norm.cts, design)
 
 ```
@@ -525,15 +509,26 @@ topTable(fit_limma, coef = "CR_statusYes", adjust.method = "BH")
 ```
 
 ```{r}
-# Assuming your table is stored in a data frame called 'results'
-# Add a column for significance based on adjusted p-value and logFC thresholds
+# Define the design matrix
+design <- cbind(mm, fit$sv)
+
+# Fit the linear model
+fit_limma <- lmFit(norm.cts, design)
+
+# Apply empirical Bayes moderation
+fit_limma <- eBayes(fit_limma)
+
+# Extract the top differentially expressed genes
+results <- topTable(fit_limma, coef = "CR_statusYes", adjust.method = "BH", number = Inf)
+
+# Check structure of results
+print(head(results))
+
+# Identify significant genes based on thresholds
 results$Significant <- ifelse(results$adj.P.Val < 0.05 & abs(results$logFC) > 1, "Yes", "No")
 
-# Load ggplot2 for visualization
-library(ggplot2)
-
 # Create the volcano plot
-ggplot(results, aes(x = logFC, y = -log10(P.Value), color = Significant)) +
+volcano_plot <- ggplot(results, aes(x = logFC, y = -log10(P.Value), color = Significant)) +
   geom_point(alpha = 0.6, size = 2) +  # Scatter plot with transparency
   scale_color_manual(values = c("No" = "gray", "Yes" = "red")) +  # Color for significant points
   labs(
@@ -544,7 +539,8 @@ ggplot(results, aes(x = logFC, y = -log10(P.Value), color = Significant)) +
   theme_minimal() +
   theme(legend.position = "top")
 
-
+# Display the plot
+print(volcano_plot)
 ```
 
 ```{r}
@@ -588,9 +584,6 @@ metadata <- metadata[match(colnames(expr_matrix), metadata$TARGET_USI), ]
 ```
 
 ```{r}
-# Load required library
-library(limma)
-
 # Ensure batch is a factor
 metadata$batch <- as.factor(metadata$batch)
 
@@ -609,20 +602,17 @@ head(limma_corrected)
 ```
 
 ```{r}
-# Load necessary library
-library(caret) # for nearZeroVar function
-
 # Identify near-zero variance columns
-nzv <- nearZeroVar(filtered_matrix, saveMetrics = TRUE)
+nzv <- nearZeroVar(limma_corrected, saveMetrics = TRUE)
 
 # Retain only columns with non-zero variance
-filtered_matrix <- filtered_matrix[, !nzv$nzv]
+limma_corrected <- limma_corrected[, !nzv$nzv]
 
 # Check the dimensions of the filtered matrix
-cat("Filtered matrix dimensions after removing near-zero variance columns:", dim(filtered_matrix), "\n")
+cat("Filtered matrix dimensions after removing near-zero variance columns:", dim(limma_corrected), "\n")
 
 # Scale the filtered matrix explicitly
-scaled_matrix <- scale(filtered_matrix)
+scaled_matrix <- scale(limma_corrected)
 
 # Check dimensions of the scaled matrix
 cat("Scaled matrix dimensions:", dim(scaled_matrix), "\n")
