@@ -21,7 +21,11 @@ if (!requireNamespace("edgeR", quietly = TRUE))
 if (!requireNamespace("FactoMineR", quietly = TRUE)) 
   install.packages("FactoMineR")
 if (!requireNamespace("BiocManager", quietly = TRUE))
+<<<<<<< HEAD
     install.packages("sva")
+=======
+  BiocManager::install("sva", update = TRUE, ask = FALSE)
+>>>>>>> 473faedfec661c34704f5c8938be84f32999cb57
 library(tidyverse)
 library(readr)
 library(biomaRt)
