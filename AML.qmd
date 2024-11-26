@@ -256,19 +256,20 @@ all(rownames(expression_data) %in% metadata$TARGET_USI)  # Should return TRUE
 ```
 
 ```{r}
-# Perform PCA
-pca_result <- PCA(standardized_data, graph = FALSE)
+# Perform PCA using prcomp()
+# standardized_data should have rows as samples and columns as features
+pca_result <- prcomp(standardized_data, scale. = TRUE)
 
 # Extract variance explained by the first two components
-explained_variance <- pca_result$eig[, 2]
+explained_variance <- (pca_result$sdev^2) / sum(pca_result$sdev^2) * 100
 PC1_variance <- round(explained_variance[1], 2)
 PC2_variance <- round(explained_variance[2], 2)
 
 # Create a data frame for PCA results
 pca_data <- data.frame(
-  Sample = rownames(expression_data),
-  PC1 = pca_result$ind$coord[, 1],
-  PC2 = pca_result$ind$coord[, 2]
+  Sample = rownames(standardized_data),
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2]
 )
 
 # Merge PCA results with metadata
@@ -745,7 +746,7 @@ print(table(res$padj < 0.05))
 # Filter the significant genes and extract their names
 significant_genes <- res[!is.na(res$padj) & res$padj < 0.05, ]
 significant_gene_names <- rownames(significant_genes)
-head(sort(significant_gene_names), 10)
+head(sort(significant_gene_names), 100)
 ```
 
 *We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those. We will find the median expression and see if their expression is higher or lower. Because in this way we **COMPARE** samples, we need to use TPM values (or RPKM) and not raw counts, since we need to normalize for **SEQUENCING DEPTH**.*
