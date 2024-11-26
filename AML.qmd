@@ -290,6 +290,109 @@ ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
   theme_minimal()
 ```
 
+```{r}
+# Step 1: Identify common gene names between counts data and gene lengths
+common_genes <- intersect(rownames(merged_counts), names(gene_lengths))
+
+# Step 2: Subset merged_counts to keep rows with genes that are in common_genes
+counts_subset <- merged_counts[common_genes, ]
+
+# Step 3: Subset gene_lengths to keep only genes that are in common_genes
+gene_lengths_subset <- gene_lengths[common_genes]
+
+# Step 4: Convert counts data frame to a matrix, as required by 'tpm'
+counts_subset_matrix <- as.matrix(counts_subset)
+
+# Step 5: Ensure gene_lengths are in numeric vector format
+gene_lengths_vector <- as.numeric(gene_lengths_subset)
+
+# Step 6: Calculate RPK
+# Normalize counts by gene length (in kilobases)
+rpk <- counts_subset_matrix / (gene_lengths_vector / 1000)
+
+# Step 7: Calculate per-sample scaling factor
+total_rpk_per_sample <- colSums(rpk)
+
+# Step 8: Calculate the corrector counts by dividing total RPK by 1 million
+corrector_counts <- total_rpk_per_sample / 1e6
+
+# Step 9: Calculate TPM by dividing RPK by corrector counts for each sample
+tpm_matrix <- t(t(rpk) / corrector_counts)
+
+# Step 10: Convert TPM matrix back to a data frame
+tpm_counts <- as.data.frame(tpm_matrix)
+
+# Step 11: Log Normalize the tpm counts file.
+log_normalized_tpm <- log2(tpm_counts + 1)
+
+# Save the TPM values to a file
+write.table(tpm_counts, file = "tpm_counts.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
+
+# Save the log-normalized TPM values to a file
+write.table(log_normalized_tpm, file = "log_normalized_tpm.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
+```
+
+```{r}
+# Step 1: Transpose TPM data for PCA (samples as rows, features as columns)
+expression_data <- t(log_normalized_tpm)
+
+# Step 2: Assign sample IDs as row names
+rownames(expression_data) <- colnames(merged_counts)
+rownames(expression_data) <- gsub("\\.", "-", rownames(expression_data))
+
+# Step 3: Replace infinite values with NA
+expression_data[is.infinite(expression_data)] <- NA
+
+# Step 4: Replace NA with column mean
+for (i in seq_len(ncol(expression_data))) {
+  expression_data[is.na(expression_data[, i]), i] <- mean(expression_data[, i], na.rm = TRUE)
+}
+
+# Step 5: Filter features based on variance
+variances <- apply(expression_data, 2, var, na.rm = TRUE)
+threshold <- 0.0001  # Adjust as per your dataset
+high_variance_features <- variances > threshold
+expression_data <- expression_data[, high_variance_features]
+
+cat("Remaining features after variance filter:", ncol(expression_data), "\n")
+
+# Step 6: Standardize the data
+standardized_data <- scale(expression_data)
+
+cat("Dimension of standardized data:", dim(standardized_data), "\n")
+
+# Perform PCA
+pca_result <- prcomp(standardized_data, scale. = TRUE)
+
+# Extract variance explained by the first two components
+explained_variance <- (pca_result$sdev^2) / sum(pca_result$sdev^2) * 100
+PC1_variance <- round(explained_variance[1], 2)
+PC2_variance <- round(explained_variance[2], 2)
+
+# Create a data frame for PCA results
+pca_data <- data.frame(
+  Sample = rownames(standardized_data),
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2]
+)
+
+# Merge PCA results with metadata
+library(dplyr)
+pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
+
+# Visualize PCA
+library(ggplot2)
+ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
+  geom_point(size = 4) +
+  geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
+  ggtitle("PCA Stratified by CR_status (Filtered Data)") +
+  xlab(paste0("Principal Component 1 (", PC1_variance, "% variance explained)")) +
+  ylab(paste0("Principal Component 2 (", PC2_variance, "% variance explained)")) +
+  scale_color_discrete(name = "CR Status") +
+  theme_minimal()
+
+```
+
 ## SVA
 
 ```{r}
@@ -494,79 +597,6 @@ design <- cbind(mm, fit$sv)
 ```
 
 Fit limma to the SVA data
-
-```{r}
-fit_limma <- lmFit(norm.cts, design)
-
-```
-
-```{r}
-fit_limma <- eBayes(fit_limma)
-
-# Extract top differentially expressed genes
-topTable(fit_limma, coef = "CR_statusYes", adjust.method = "BH")
-
-```
-
-```{r}
-# Define the design matrix
-design <- cbind(mm, fit$sv)
-
-# Fit the linear model
-fit_limma <- lmFit(norm.cts, design)
-
-# Apply empirical Bayes moderation
-fit_limma <- eBayes(fit_limma)
-
-# Extract the top differentially expressed genes
-results <- topTable(fit_limma, coef = "CR_statusYes", adjust.method = "BH", number = Inf)
-
-# Check structure of results
-print(head(results))
-
-# Identify significant genes based on thresholds
-results$Significant <- ifelse(results$adj.P.Val < 0.05 & abs(results$logFC) > 1, "Yes", "No")
-
-# Create the volcano plot
-volcano_plot <- ggplot(results, aes(x = logFC, y = -log10(P.Value), color = Significant)) +
-  geom_point(alpha = 0.6, size = 2) +  # Scatter plot with transparency
-  scale_color_manual(values = c("No" = "gray", "Yes" = "red")) +  # Color for significant points
-  labs(
-    title = "Volcano Plot",
-    x = "Log2 Fold Change (logFC)",
-    y = "-log10 P-Value"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "top")
-
-# Display the plot
-print(volcano_plot)
-```
-
-```{r}
-# Filter significant genes based on thresholds
-significant_genes <- results[results$adj.P.Val < 0.05 & abs(results$logFC) > 1, ]
-
-# Extract the gene names (assuming the gene names are stored in a column called "Gene")
-significant_gene_names <- rownames(significant_genes)  # Or use `results$Gene` if there's a "Gene" column
-
-# Print the significant gene names
-print(significant_gene_names)
-
-# If you want to save the gene names to a file:
-write.table(significant_gene_names, file = "significant_genes.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
-
-```
-
-Limma assuming every sample is a batch.... I did nt like it
-
-```{r}
-expr_matrix <- merged_counts  # Transpose to genes × samples
-rownames(expr_matrix)
-# Replace 'CR_status' with the actual column name in metadata
-metadata$batch <- seq_len(nrow(metadata))  # Assign unique batch IDs
-metadata
-```
 
 colnames(expr_matrix)
 
@@ -822,45 +852,7 @@ Now we can **normalize the raw counts to TPM**. We can easily do that manually i
 4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
 
 ```{r}
-# Step 1: Identify common gene names between counts data and gene lengths
-common_genes <- intersect(rownames(merged_counts), names(gene_lengths))
 
-# Step 2: Subset merged_counts to keep rows with genes that are in common_genes
-counts_subset <- merged_counts[common_genes, ]
-
-# Step 3: Subset gene_lengths to keep only genes that are in common_genes
-gene_lengths_subset <- gene_lengths[common_genes]
-
-# Step 4: Convert counts data frame to a matrix, as required by 'tpm'
-counts_subset_matrix <- as.matrix(counts_subset)
-
-# Step 5: Ensure gene_lengths are in numeric vector format
-gene_lengths_vector <- as.numeric(gene_lengths_subset)
-
-# Step 6: Calculate RPK
-# Normalize counts by gene length (in kilobases)
-rpk <- counts_subset_matrix / (gene_lengths_vector / 1000)
-
-# Step 7: Calculate per-sample scaling factor
-total_rpk_per_sample <- colSums(rpk)
-
-# Step 8: Calculate the corrector counts by dividing total RPK by 1 million
-corrector_counts <- total_rpk_per_sample / 1e6
-
-# Step 9: Calculate TPM by dividing RPK by corrector counts for each sample
-tpm_matrix <- t(t(rpk) / corrector_counts)
-
-# Step 10: Convert TPM matrix back to a data frame
-tpm_counts <- as.data.frame(tpm_matrix)
-
-# Step 11: Log Normalize the tpm counts file.
-log_normalized_tpm <- log2(tpm_counts + 1)
-
-# Save the TPM values to a file
-write.table(tpm_counts, file = "tpm_counts.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
-
-# Save the log-normalized TPM values to a file
-write.table(log_normalized_tpm, file = "log_normalized_tpm.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
 ```
 
 Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.
