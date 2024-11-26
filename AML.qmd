@@ -290,6 +290,16 @@ ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
   theme_minimal()
 ```
 
+Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
+
+1.  Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length
+
+2.  Calculate scaling factors: Sum all RPK values per sample
+
+3.  Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)
+
+4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
+
 ```{r}
 # Step 1: Identify common gene names between counts data and gene lengths
 common_genes <- intersect(rownames(merged_counts), names(gene_lengths))
@@ -839,20 +849,6 @@ gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc
 
 # Check the resulting gene lengths
 print(gene_lengths)
-```
-
-Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
-
-1.  Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length
-
-2.  Calculate scaling factors: Sum all RPK values per sample
-
-3.  Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)
-
-4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
-
-```{r}
-
 ```
 
 Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.
