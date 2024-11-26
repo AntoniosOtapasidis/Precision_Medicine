@@ -216,7 +216,7 @@ names(metadata)[names(metadata) == "Overall_Survival_Time_in_Days"] <- "Survival
 metadata$CR_status <- ifelse(metadata$CR_status == "CR", "Yes", "No")
 ```
 
-## PCA on the data
+## PCA on the data on the Raw count
 
 ```{r}
 # Prepare the data
@@ -290,7 +290,7 @@ ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
   theme_minimal()
 ```
 
-Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
+## Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
 
 1.  Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length
 
@@ -299,6 +299,34 @@ Now we can **normalize the raw counts to TPM**. We can easily do that manually i
 3.  Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)
 
 4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
+
+```{r}
+# Step 1: Connect to Ensembl
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Step 2: Get all the gene names from merged_counts
+gene_symbols <- rownames(merged_counts)
+
+# Step 3: Retrieve gene lengths from Ensembl using biomaRt
+# We want to retrieve 'hgnc_symbol' and 'transcript_length'
+gene_lengths_df <- getBM(
+  attributes = c("hgnc_symbol", "transcript_length", "transcript_is_canonical"),
+  filters = "hgnc_symbol",
+  values = gene_symbols,
+  mart = ensembl
+)
+
+gene_lengths_df <- gene_lengths_df |> 
+  dplyr::filter(!is.na(transcript_is_canonical))
+
+# Convert to a named vector
+gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc_symbol)
+
+# Check the resulting gene lengths
+print(gene_lengths)
+```
+
+### PCA ON THE TPM Counts
 
 ```{r}
 # Step 1: Identify common gene names between counts data and gene lengths
@@ -403,43 +431,12 @@ ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
 
 ```
 
-## SVA
-
 ```{r}
-# Replace dots with hyphens in rownames of standardized_data
-rownames(standardized_data) <- gsub("\\.", "-", rownames(standardized_data))
-
-# Check alignment again
-if (!all(rownames(metadata) %in% rownames(standardized_data))) {
-  cat("Samples still do not fully align. Missing samples:\n")
-  missing_samples <- setdiff(rownames(metadata), rownames(standardized_data))
-  print(missing_samples)
-} else {
-  cat("Sample names are now aligned.\n")
-}
-
-```
-
-```{r}
-rownames(standardized_data)
+rownames(expression_data)
 ```
 
 ```{r}
 cat("Dimensions of expression_data: ", dim(expression_data), "\n")
-
-```
-
-We have to take account for the batch effects. We don t know If there are any so we are going to use the SVA to account for latent batch effects
-
-## *We have to take account for the batch effects. We don t know If there are any so we are going to use the SVA to account for latent batch effects* \https://biodatascience.github.io/compbio/dist/sva.html\*
-
-```{r}
-
-View(merged_counts_with_ids)
-```
-
-```{r}
-colnames(merged_counts_with_ids)
 
 ```
 
@@ -483,104 +480,13 @@ colnames(merged_counts_with_ids)
 rownames(metadata)
 ```
 
-```{r}
-# DESeq is performed ALWAYS with raw counts
-dds <- DESeqDataSetFromMatrix(countData = merged_counts, colData = metadata, design = ~ CR_status)
-
-# Pre-filtering: remove rows with low gene counts (keep rows that have at least 10 reads total) - recommended but not mandatory step
-keep <- rowSums(counts(dds)) >= 10
-dds <- dds[keep, ]
-
-# Run DESeq
-dds <- DESeq(dds)
-```
-
-```{r}
-#We estimate the library size correction and save the normalized counts matrix:
-
-dds <- estimateSizeFactors(dds)
-norm.cts <- counts(dds, normalized=TRUE)
-```
-
-```{r}
-# Ensure 'CR_status' and any other relevant variables are factors
-colData(dds)$CR_status <- factor(colData(dds)$CR_status)
-
-# If you have a 'batch' variable, ensure it is a factor as well
-# For example:
-# colData(dds)$batch <- factor(colData(dds)$batch)
-
-# Extract normalized counts
-norm.cts <- counts(dds, normalized=TRUE)
-
-# Filter rows with all zero counts
-norm.cts <- norm.cts[rowSums(norm.cts) > 0, ]
-
-# Create design matrices
-# Full model includes known biological covariates
-mm <- model.matrix(~ CR_status, colData(dds))
-
-# Null model includes only the intercept
-mm0 <- model.matrix(~ 1, colData(dds))
-
-# Run SVA to estimate surrogate variables
-fit <- svaseq(norm.cts, mod = mm, mod0 = mm0)
-
-# Inspect the result
-fit
-```
-
-## Based on the SVA we identified 6 surrogated variables
-
-Plot
-
-```{r}
-# Set up plotting area
-bigpar()
-
-# Convert CR_status to integers for plotting shapes
-colData(dds)$CR_status.int <- as.integer(colData(dds)$CR_status)
-
-# Plot the first two surrogate variables (SV1 and SV2)
-plot(
-  fit$sv[, 1:2],
-  col = "black",                    # Single color (no batch variable)
-  pch = colData(dds)$CR_status.int, # Shape determined by CR_status
-  cex = 2,                          # Point size
-  xlab = "SV1",
-  ylab = "SV2"
-)
-
-# Add a legend for CR_status
-legend(
-  "topright",
-  legend = levels(colData(dds)$CR_status), # Levels of CR_status
-  pch = unique(colData(dds)$CR_status.int), # Match shapes
-  col = "black",                           # Single color
-  cex = 0.8,
-  ncol = 2,
-  title = "CR_status"
-)
-
-
-```
+Volcano plot
 
 -   
 
 -   **Separation by `CR_status`:**
 
     -   The two shapes (`△` for "No" and `○` for "Yes") seem scattered and overlap significantly. There isn't a clear clustering of points based on `CR_status`, which may suggest that the surrogate variables are capturing other hidden variations (not necessarily batch effects).
-
--   **Batch Effects Likely Absent:**
-
-    -   If batch effects were strongly influencing the data, you would typically see clusters or groupings that align with the batches (if batch variables existed). Since you don't have a `batch` variable and the plot shows no distinct clustering, batch effects are not apparent.
-
-    ## Surrogate Variables by Sample Order Plot:
-
-    ```{r}
-    plot(1:nrow(fit$sv), fit$sv[, 1], type = "b", xlab = "Sample Index", ylab = "SV1")
-
-    ```
 
 -   **Fluctuations Without Clear Clusters:**
 
@@ -593,137 +499,6 @@ legend(
         -   Distinct blocks or clusters of samples where SV1 values differ significantly.
 
         -   Systematic increases or decreases across contiguous sample indices (e.g., sequencing batches processed sequentially).
-
-## Examine Variance Explained by Surrogate Variables
-
-```{r}
-summary(prcomp(fit$sv))
-```
-
-```{r}
-# Design matrix with CR_status and surrogate variables
-design <- cbind(mm, fit$sv)
-
-```
-
-Fit limma to the SVA data
-
-colnames(expr_matrix)
-
-```{r}
-# Replace periods (.) with hyphens (-) in column names of expr_matrix
-colnames(expr_matrix) <- gsub("\\.", "-", colnames(expr_matrix))
-
-# Check the result
-head(colnames(expr_matrix))
-# Reorder metadata to match the columns of expr_matrix
-metadata <- metadata[match(colnames(expr_matrix), metadata$TARGET_USI), ]
-
-# Continue with batch correction, scaling, PCA, etc.
-
-```
-
-```{r}
-# Ensure batch is a factor
-metadata$batch <- as.factor(metadata$batch)
-
-# Optional: Define biological covariates to preserve (e.g., CR_status)
-
-# Perform batch correction
-limma_corrected <- removeBatchEffect(
-  expr_matrix,
-  batch = metadata$batch
-)
-
-
-# View corrected data
-head(limma_corrected)
-
-```
-
-```{r}
-# Identify near-zero variance columns
-nzv <- nearZeroVar(limma_corrected, saveMetrics = TRUE)
-
-# Retain only columns with non-zero variance
-limma_corrected <- limma_corrected[, !nzv$nzv]
-
-# Check the dimensions of the filtered matrix
-cat("Filtered matrix dimensions after removing near-zero variance columns:", dim(limma_corrected), "\n")
-
-# Scale the filtered matrix explicitly
-scaled_matrix <- scale(limma_corrected)
-
-# Check dimensions of the scaled matrix
-cat("Scaled matrix dimensions:", dim(scaled_matrix), "\n")
-
-# Perform PCA
-if (nrow(scaled_matrix) > ncol(scaled_matrix)) {
-  scaled_matrix <- t(scaled_matrix)
-}
-
-pca_result <- prcomp(scaled_matrix, center = TRUE, scale. = FALSE) # No need to scale again
-
-# View PCA summary
-summary(pca_result)
-
-# Extract PCA scores for visualization
-pca_scores <- as.data.frame(pca_result$x)
-
-# Plot the first two principal components
-# Calculate variance explained by each PC
-explained_variance <- round(100 * pca_result$sdev^2 / sum(pca_result$sdev^2), 2)
-
-# Create labels with variance explained
-x_label <- paste0("PC1 (", explained_variance[1], "% Variance)")
-y_label <- paste0("PC2 (", explained_variance[2], "% Variance)")
-
-# Plot the first two principal components
-library(ggplot2)
-ggplot(pca_scores, aes(x = PC1, y = PC2, color = metadata$CR_status)) +
-  geom_point(size = 3) +
-  labs(
-    title = "PCA Plot",
-    x = x_label,
-    y = y_label
-  ) +
-  theme_minimal()
-
-
-
-```
-
-```{r}
-# Identify columns where all rows are zero or constant
-constant_columns <- apply(merged_data[, -which(names(merged_data) %in% c("sample_id", "CR_status"))], 2, function(x) sd(x) == 0)
-
-# Remove constant columns
-merged_data_cleaned <- merged_data[, !constant_columns]
-
-# Scale the cleaned data (excluding 'sample_id' and 'CR_status' columns)
-merged_data_scaled <- scale(merged_data_cleaned[, -which(names(merged_data_cleaned) %in% c("sample_id", "CR_status"))])
-
-# Perform PCA
-pca_result <- prcomp(merged_data_scaled, center = TRUE, scale. = TRUE)
-
-# Summary of PCA to understand variance explained
-summary(pca_result)
-
-# Create a PCA dataframe with the results
-pca_data <- data.frame(pca_result$x)  # Extract PCA scores
-pca_data$CR_status <- merged_data$CR_status  # Add CR_status for coloring
-
-# Plotting the PCA
-library(ggplot2)
-ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status)) +
-  geom_point(size = 3) +
-  labs(title = "PCA of Batch Corrected Data with CR Status",
-       x = paste("PC1 - ", round(100 * summary(pca_result)$importance[2, 1]), "% variance"),
-       y = paste("PC2 - ", round(100 * summary(pca_result)$importance[2, 2]), "% variance")) +
-  theme_minimal() +
-  scale_color_manual(values = c("red", "blue"))  # Customize color palette (adjust as needed)
-
-```
 
 ## Survival analysis
 
@@ -821,34 +596,38 @@ volcano_plot <- volcano_plot +
 print(volcano_plot)
 ```
 
+\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
+
+I tranfered the TPM cells above
+
 ## TPM calculation
 
 We don't have the TPM values (we actually have them, but for the unstranded values). First, we need the **GENE LENGTH** for that, which we don't have. We can try to get this info from Ensembl.
 
 ```{r}
 # Step 1: Connect to Ensembl
-ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+#ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
 
 # Step 2: Get all the gene names from merged_counts
-gene_symbols <- rownames(merged_counts)
+#gene_symbols <- rownames(merged_counts)
 
 # Step 3: Retrieve gene lengths from Ensembl using biomaRt
 # We want to retrieve 'hgnc_symbol' and 'transcript_length'
-gene_lengths_df <- getBM(
-  attributes = c("hgnc_symbol", "transcript_length", "transcript_is_canonical"),
-  filters = "hgnc_symbol",
-  values = gene_symbols,
-  mart = ensembl
-)
+#gene_lengths_df <- getBM(
+ # attributes = c("hgnc_symbol", "transcript_length", "transcript_is_canonical"),
+#  filters = "hgnc_symbol",
+ # values = gene_symbols,
+#  mart = ensembl
+#)
 
-gene_lengths_df <- gene_lengths_df |> 
-  dplyr::filter(!is.na(transcript_is_canonical))
+#gene_lengths_df <- gene_lengths_df |> 
+ # dplyr::filter(!is.na(transcript_is_canonical))
 
 # Convert to a named vector
-gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc_symbol)
+#gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc_symbol)
 
 # Check the resulting gene lengths
-print(gene_lengths)
+#print(gene_lengths)
 ```
 
 Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.
