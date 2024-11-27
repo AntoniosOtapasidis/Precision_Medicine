@@ -280,13 +280,13 @@ pca_data <- data.frame(
 pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 
 # Plot PCA stratified by CR_status
-ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
+ggplot(pca_data, aes(x = PC1, y = PC2, color = MRD_status, label = Sample)) +
   geom_point(size = 4) +
   geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
   ggtitle("PCA Stratified by CR_status (Filtered Data)") +
   xlab(paste0("Principal Component 1 (", PC1_variance, "% variance explained)")) +
   ylab(paste0("Principal Component 2 (", PC2_variance, "% variance explained)")) +
-  scale_color_discrete(name = "CR Status") +
+  scale_color_discrete(name = "MRD Status") +
   theme_minimal()
 ```
 
@@ -420,13 +420,13 @@ pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 
 # Visualize PCA
 library(ggplot2)
-ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
+ggplot(pca_data, aes(x = PC1, y = PC2, color = MRD_status, label = Sample)) +
   geom_point(size = 4) +
   geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
   ggtitle("PCA Stratified by CR_status (Filtered Data)") +
   xlab(paste0("Principal Component 1 (", PC1_variance, "% variance explained)")) +
   ylab(paste0("Principal Component 2 (", PC2_variance, "% variance explained)")) +
-  scale_color_discrete(name = "CR Status") +
+  scale_color_discrete(name = "MRD Status") +
   theme_minimal()
 
 ```
@@ -441,37 +441,34 @@ cat("Dimensions of expression_data: ", dim(expression_data), "\n")
 ```
 
 ```{r}
-# Ensure gene_name is unique
-merged_counts_with_ids$gene_name <- make.unique(as.character(merged_counts_with_ids$gene_name))
+# Create a data frame for variance explained by each principal component
+explained_variance_df <- data.frame(
+  Principal_Component = seq_along(explained_variance),
+  Variance_Explained = explained_variance
+)
 
-# Set row names to the "gene_name" column
-rownames(merged_counts_with_ids) <- merged_counts_with_ids$gene_name
-
-# Drop the "gene_id" and "gene_name" columns
-merged_counts_with_ids <- merged_counts_with_ids[, !colnames(merged_counts_with_ids) %in% c("gene_id", "gene_name")]
-
-# Check the result
-head(merged_counts_with_ids)  # Display the first few rows
-
-```
-
-```{r}
-length(colnames(merged_counts_with_ids))
-length(rownames(metadata))
+# Plot the explained variance
+ggplot(explained_variance_df, aes(x = Principal_Component, y = Variance_Explained)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  ggtitle("Explained Variance by Principal Components") +
+  xlab("Principal Component") +
+  ylab("Variance Explained (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 ```
 
 ```{r}
 # Check lengths to ensure they match
-if (length(colnames(merged_counts_with_ids)) == length(rownames(metadata))) {
+#if (length(colnames(merged_counts_with_ids)) == length(rownames(metadata))) {
   # Replace column names of merged_counts_with_ids with row names of metadata
-  colnames(merged_counts_with_ids) <- rownames(metadata)
-} else {
-  stop("The number of columns in merged_counts_with_ids does not match the number of rows in metadata.")
-}
+#  colnames(merged_counts_with_ids) <- rownames(metadata)
+#} else {
+ # stop("The number of columns in merged_counts_with_ids does not match the number of rows in metadata.")
+#}
 
 # Verify the alignment
-all(colnames(merged_counts_with_ids) == rownames(metadata))
+#all(colnames(merged_counts_with_ids) == rownames(metadata))
 
 ```
 
@@ -530,9 +527,41 @@ text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "re
 *We will perform differential gene expression analysis in order to find genes differentially expressed between responders and non-responders.*
 
 ```{r}
+levels(metadata$MRD_status)
+metadata$MRD_status <- relevel(metadata$MRD_status, ref = "Yes")
+
+```
+
+```{r}
+head(merged_counts)
+head(metadata)
+
+# Step 1: Assign sample names as rownames to metadata
+# Ensure merged_counts is a tibble (if not, convert it)
+library(dplyr)
+colnames(merged_counts) <- gsub("\\.", "-", colnames(merged_counts))
+
+# Print column names of merged_counts and metadata$TARGET_USI
+if (!all(metadata$TARGET_USI %in% colnames(merged_counts))) {
+  mismatched_samples <- setdiff(metadata$TARGET_USI, colnames(merged_counts))
+  stop("The following sample names are in metadata but not in merged_counts: ", 
+       paste(mismatched_samples, collapse = ", "))
+}
+
+# Reorder merged_counts columns to match metadata$TARGET_USI
+merged_counts <- merged_counts[, metadata$TARGET_USI, drop = FALSE]
+print(merged_counts)
+# Check the alignment
+print("Alignment successful!")
+
+# Now, colnames(merged_counts) will match rownames(metadata)
+
+
+# Now the colnames of merged_counts match the rownames of metadata in order
+
 # Create the DESeq object and run DESeq
 # DESeq is performed ALWAYS with raw counts
-dds <- DESeqDataSetFromMatrix(countData = merged_counts, colData = metadata, design = ~ CR_status)
+dds <- DESeqDataSetFromMatrix(countData = merged_counts, colData = metadata, design = ~ MRD_status)
 
 # Pre-filtering: remove rows with low gene counts (keep rows that have at least 10 reads total) - recommended but not mandatory step
 keep <- rowSums(counts(dds)) >= 10
@@ -594,6 +623,12 @@ volcano_plot <- volcano_plot +
 
 # Print the volcano plot
 print(volcano_plot)
+
+```
+
+```{r}
+
+
 ```
 
 \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
@@ -741,4 +776,21 @@ p_value <- 1 - pchisq(sd$chisq, length(sd$n) - 1)
 km <- survfit(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
 plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability",main = "Kaplan-Meier Plot")
 text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "red", cex = 1.2)
+```
+
+\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
+
+# Till here is good
+
+Identify new biomarkers
+
+```{r}
+biomarker_list <- c("GALNT17"   ,"SOX11",     "SKIDA1",    "PARD3B",    "KLF8",      "KCNMB4", "LINC01829", "DUOX2" )
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("clusterProfiler")
+
+enrich <- enrichGO(gene = biomarker_list, OrgDb = org.Hs.eg.db, ont = "BP", keyType = "SYMBOL")
+dotplot(enrich, showCategory = 20, title = "GO Biological Processes")
+
 ```
