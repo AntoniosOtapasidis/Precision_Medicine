@@ -472,6 +472,11 @@ km <- survfit(Surv(Survival_Time, Vital_Status) ~ CR_status, data = metadata)
 plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability",main = "Kaplan-Meier Plot")
 text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "red", cex = 1.2)
 
+# Survival probability
+survival_summary <- summary(km, times = c(0, 250, 500, 750, 1000, 1250))
+survival_probs <- survival_summary$surv
+time_points <- survival_summary$time
+
 # Enhanced Kaplan-Meier plot
 survival_cr <- ggsurvplot(
   km, 
@@ -495,7 +500,7 @@ survival_cr <- ggsurvplot(
     ),
   palette = c("#E64B35", "#4DBBD5"),  # Set custom colors for each group
   title = "Kaplan-Meier estimator plot",
-   subtitle = "Differentiating responders from non-responders based on CR status",
+  subtitle = "Differentiating responders from non-responders based on CR status",
   xlab = "Time (Days)",
   ylab = "Survival Probability",
   legend.title = "CR Status",
@@ -503,25 +508,41 @@ survival_cr <- ggsurvplot(
   xlim = c(0, 1200),  # Limit x-axis range
   ylim = c(0.25, 1),
   font.title = c(16, "bold"),  # Customize title font
-  font.subtitle = c(13, "bold"), 
+  font.subtitle = c(13, "bold"),  # Customize subtitle font
   font.x = c(14),  # Customize x-axis label font
   font.y = c(14),  # Customize y-axis label font
   font.tickslab = c(12),  # Customize tick label font
   font.legend = c(12)  # Customize legend font
 )
 
-# Combine the main plot and risk table
+# Add annotations for survival probabilities
+for (i in 1:length(time_points)) {
+  survival_cr$plot <- survival_cr$plot + 
+    annotate(
+      "text",
+      x = time_points[i], 
+      y = survival_probs[i], 
+      label = paste0("S(", time_points[i], ") = ", round(survival_probs[i], 2)),
+      size = 4,
+      hjust = -0.1,
+      vjust = 1.5,
+      color = "black"
+    )
+}
+
+# Combine the main plot and risk table using cowplot::plot_grid
 combined_plot <- plot_grid(
-  survival_cr$plot,        # Main survival plot
+  survival_cr$plot,        # Main survival plot with annotations
   survival_cr$table + theme(plot.background = element_rect(fill = "white")),  # Risk table with white background
   ncol = 1,                # Stack vertically
   rel_heights = c(3, 1)    # Ratio of space given to the plot and the risk table
 )
 
-combined_plot
+# Display the combined plot
+print(combined_plot)
 
-# Save the combined plot with ggsave
-ggsave("Kaplan_Meier_CR.png", plot = combined_plot, width = 10, height = 10, dpi = 300, bg = "white")
+# Save the combined plot with annotations
+ggsave("Kaplan_Meier_CR_with_Annotations.png", plot = combined_plot, width = 10, height = 10, dpi = 300, bg = "white")
 ```
 
 We don't find a **p-value** \< 0.05, which means the difference is not significant (p-value = 0.8913 for MRD and 0.0402 for CR).
@@ -653,7 +674,6 @@ results_df <- as.data.frame(results_matrix)
 results_df$p_value <- as.numeric(results_df$p_value)
 results_df$is_significant <- as.logical(results_df$is_significant)
 
-
 # Apply Benjamini-Hochberg correction for multiple testing to the p-values
 results_df$adjusted_p_value <- p.adjust(results_df$p_value, method = "BH")
 
@@ -666,11 +686,16 @@ print(results_df)
 # After that you can create a Kaplan-Meier plot for each gene (not displayed here)
 ```
 
+In the code above, we set the acceptable p-value to 0.025 instead of 0.05. This is because, after testing 520 genes for the Kaplan-Meier estimator, we need to correct for multiple testing. This is done with the less strict Benjamini-Hochberg corrector. But, although we get 46 significant genes (with p-value = 0.05), we don't get any significant genes after the correction. This can be easily explained by the fact that we perform 520 tests (one for each gene) and we only have 20 samples. Bottom line is, we have a way larger number of tests in comparison to that of the samples.
+
+We understand what is the caveat here, due to our small sample number we cannot tackle it properly, so instead we get more strict with the accepted p-value for the Kaplan-Meier estimator.
+
 ## ssGSEA
 
-We found some genes that can point out a statistical difference in the survival of the two groups (higher or lower expression of a gene). But genes rarely work individually in nature, so let's take a multivariate approach, that is, define a group of genes. We will start by selecting the e.g. 15 most significantly up regulated genes in responders, calculate the sample wise gene set enrichment and split again the patients into two groups.
+We found some genes that can point out a statistical difference in the survival of the two groups (higher or lower expression of a gene). But genes rarely work individually in nature, so let's take a multivariate approach, that is, define a group of genes. We will calculate the sample wise gene set enrichment and split again the patients into two groups.
 
 ```{r}
+### DON'T WORK WITH THIS ONE ###
 # Get only the 15 most significantly up regulated genes
 res2 <- res[res$padj < 0.05 & res$log2FoldChange > 0,]
 gene_set <- list(responder_set = rownames(res2[order(res2$padj),])[1:15])
@@ -693,36 +718,28 @@ text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "re
 ```
 
 ```{r}
-# ALTERNATIVE APPROACH
-# Get a subset of the results of the DESeq genes that can stratify efficiently the patients
-significant_genes_df <- results_df %>% filter(is_significant == TRUE)
+# Get the significant genes from the Kaplan-Meier estimator tests in a subset
+significant_genes_km <- results_df[results_df$is_significant == TRUE, ]
 
 # And now follow the same approach as the code block before
 # Ensure the significant_genes_df has rownames, which are the gene names
-significant_gene_names <- rownames(significant_genes_df)
+significant_gene_names_km <- rownames(significant_genes_km)
 
 # Extract the significant genes from 'res' (the original DESeq2 results)
-significant_genes_with_logfc <- res[significant_gene_names, ]
-
-# Keep only upregulated genes (log2FoldChange > 0) and order by adjusted p-value
-res3 <- significant_genes_with_logfc %>%
-  #filter(log2FoldChange > 0) %>%   # Filter for upregulated genes
-  arrange(padj)                    # Sort by adjusted p-value
-
-# Sort res3 by padj in ascending order
-res3_sorted <- res3[order(res3$padj), ]
+significant_genes_with_logfc <- res[significant_gene_names_km, ]
+significant_genes_with_logfc <- significant_genes_with_logfc[order(significant_genes_with_logfc$padj), ]
 
 # Get the rownames of the top 15 genes based on the sorted padj values
 top_15_genes <- rownames(res3_sorted)
 
-# Create a gene set list with the top 15 genes
-gene_set <- list(responder_set = top_15_genes)
+# Create a gene set list 
+gene_set <- list(responder_set = significant_gene_names_km)
 
 # Perform the sample wise gene set enrichment
 param <- ssgseaParam(as.matrix(log_normalized_tpm), gene_set)
 enrich <- gsva(param)
 
-# Perform the log rank and produce the plot
+# Perform the log rank and produce the plot - TO USE WITH MEDIAN AS A THRESHOLD
 #metadata$biomarker_status <- enrich[1,] > median(enrich[1,])
 
 # Define bottom and top quartile thresholds
@@ -759,7 +776,7 @@ res_subset <- subset(res, rownames(res) %in% top_15_genes)
 
 \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
 
-# Till here is good
+# Till here is good - Experimental area
 
 Identify new biomarkers
 
