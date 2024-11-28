@@ -22,6 +22,8 @@ if (!requireNamespace("FactoMineR", quietly = TRUE))
   install.packages("FactoMineR")
 if (!requireNamespace("BiocManager", quietly = TRUE))
   install.packages("sva")
+if (!requireNamespace("survminer", quietly = TRUE))
+  BiocManager::install("survminer")
 library(tidyverse)
 library(readr)
 library(biomaRt)
@@ -42,6 +44,9 @@ library(sva)
 library(rafalib)
 library(limma)
 library(caret)
+library(survival)
+library(survminer)
+library(cowplot)
 ```
 
 ```{r}
@@ -453,7 +458,7 @@ metadata$MRD_status <- factor(metadata$MRD_status, levels = c("No", "Yes"))
 metadata$CR_status <- factor(metadata$CR_status, levels = c("No", "Yes"))
 
 # We also need to convert "Vital status" to a boolean (0 for alive, 1 for dead)
-metadata$Vital_Status <- ifelse(metadata$Vital_Status == "Dead", 1, 0)
+#metadata$Vital_Status <- ifelse(metadata$Vital_Status == "Dead", 1, 0)
 
 # Create the survival object
 sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ CR_status, data = metadata)
@@ -466,13 +471,64 @@ p_value <- 1 - pchisq(sd$chisq, length(sd$n) - 1)
 km <- survfit(Surv(Survival_Time, Vital_Status) ~ CR_status, data = metadata)
 plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability",main = "Kaplan-Meier Plot")
 text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "red", cex = 1.2)
+
+# Enhanced Kaplan-Meier plot
+survival_cr <- ggsurvplot(
+  km, 
+  data = metadata,
+  pval = TRUE,  # Display p-value on the plot
+  pval.coord = c(150, 0.4),  # Set the position of the p-value annotation
+  pval.size = 10,  # Set the size of the p-value text
+  conf.int = FALSE,  # Remove confidence intervals for the survival curves
+  censor = FALSE,  # Remove censoring marks
+  risk.table = TRUE,  # Add number at risk table below the plot
+  risk.table.col = "strata",  # Color risk table by strata
+  break.time.by = 250,  # Set x-axis breaks to be every 250 days
+  size = 3,  # Increase the line thickness of the survival curves
+  ggtheme = theme_minimal() +  # Set a clean minimal theme
+    theme(
+      panel.background = element_rect(fill = "white", color = NA),  # Ensure panel background is white
+      plot.background = element_rect(fill = "white", color = NA),   # Ensure overall plot background is white
+      legend.background = element_rect(fill = "white", color = NA), # Set legend background to white
+      legend.key = element_rect(fill = "white", color = NA),        # Set legend key (box around legend items) to white
+      plot.margin = margin(t = 10, r = 20, b = 10, l = 10, unit = "mm")  # Add more margin space, especially on the right
+    ),
+  palette = c("#E64B35", "#4DBBD5"),  # Set custom colors for each group
+  title = "Kaplan-Meier estimator plot",
+   subtitle = "Differentiating responders from non-responders based on CR status",
+  xlab = "Time (Days)",
+  ylab = "Survival Probability",
+  legend.title = "CR Status",
+  legend.labs = c("No", "Yes"),  # Customize labels in the legend
+  xlim = c(0, 1200),  # Limit x-axis range
+  ylim = c(0.25, 1),
+  font.title = c(16, "bold"),  # Customize title font
+  font.subtitle = c(13, "bold"), 
+  font.x = c(14),  # Customize x-axis label font
+  font.y = c(14),  # Customize y-axis label font
+  font.tickslab = c(12),  # Customize tick label font
+  font.legend = c(12)  # Customize legend font
+)
+
+# Combine the main plot and risk table
+combined_plot <- plot_grid(
+  survival_cr$plot,        # Main survival plot
+  survival_cr$table + theme(plot.background = element_rect(fill = "white")),  # Risk table with white background
+  ncol = 1,                # Stack vertically
+  rel_heights = c(3, 1)    # Ratio of space given to the plot and the risk table
+)
+
+combined_plot
+
+# Save the combined plot with ggsave
+ggsave("Kaplan_Meier_CR.png", plot = combined_plot, width = 10, height = 10, dpi = 300, bg = "white")
 ```
 
 We don't find a **p-value** \< 0.05, which means the difference is not significant (p-value = 0.8913 for MRD and 0.0402 for CR).
 
 ## DESeq
 
-We will perform differential gene expression analysis in order to find genes differentially expressed between responders and non-responders.
+We will perform differential gene expression analysis in order to find genes differentially expressed between responders and non-responders (CR status).
 
 ```{r}
 # Step 1: Assign sample names as rownames to metadata
@@ -519,8 +575,8 @@ We found some genes that are significantly differentiated between responders and
 ```{r}
 # Add a significance column for plotting
 res$significance <- "Not Significant"
-res$significance[res$padj < 0.025 & res$log2FoldChange > 0] <- "Upregulated"
-res$significance[res$padj < 0.025 & res$log2FoldChange < 0] <- "Downregulated"
+res$significance[res$padj < 0.05 & res$log2FoldChange > 0] <- "Upregulated"
+res$significance[res$padj < 0.05 & res$log2FoldChange < 0] <- "Downregulated"
 
 # Volcano plot
 volcano_plot <- ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
@@ -529,11 +585,14 @@ volcano_plot <- ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = si
                                 "Upregulated" = "red", 
                                 "Downregulated" = "blue")) +
   theme_minimal() +
-  labs(title = "",
+  labs(title = "Differentially expressed genes between responders and non-responders",
+       subtitle = "Names of the most significant ones displayed",
        x = "Log2 Fold Change",
        y = "-Log10 Adjusted P-value",
        color = "Significance") +
-  theme(legend.position = "top")
+  theme(legend.position = "top",
+        plot.title = element_text(size = 10, face = "bold"),
+    plot.subtitle = element_text(size = 8, face = "bold"))
 
 # Step 1: Subset for upregulated and downregulated genes
 upregulated_genes <- res[res$significance == "Upregulated", ] 
@@ -552,6 +611,9 @@ volcano_plot <- volcano_plot +
 
 # Print the volcano plot
 print(volcano_plot)
+
+# Save the plot
+ggsave("Volcano_plot.png", plot = volcano_plot, width = 6, height = 5, dpi = 300, bg = "white")
 ```
 
 We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those and perform survival analysis. We will find the median expression and see if the expression for each sample is higher or lower. Because in this way we **COMPARE** samples, we need to use the TPM values and not raw counts, since they need to be comparable.
