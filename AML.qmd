@@ -198,7 +198,7 @@ for (i in seq_len(ncol(expression_data))) {
 
 # Step 5: Filter features based on variance
 variances <- apply(expression_data, 2, var, na.rm = TRUE)
-threshold <- 0.0001  # Adjustable
+threshold <- 0.0001  # Adjustable, just needs to be different than zero
 high_variance_features <- variances > threshold
 expression_data <- expression_data[, high_variance_features]
 
@@ -210,13 +210,11 @@ standardized_data <- scale(expression_data)
 
 # Final checks
 cat("Dimension of standardized data:", dim(standardized_data), "\n")
-
 ```
 
 ```{r}
 # Check alignment
 all(rownames(expression_data) %in% metadata$TARGET_USI)  # Should return TRUE
-
 ```
 
 ```{r}
@@ -226,8 +224,8 @@ pca_result <- prcomp(standardized_data, scale. = TRUE)
 
 # Extract variance explained by the first two components
 explained_variance <- (pca_result$sdev^2) / sum(pca_result$sdev^2) * 100
-PC1_variance <- round(explained_variance[1], 2)
-PC2_variance <- round(explained_variance[2], 2)
+PC1_variance <- round(explained_variance[1], 1)
+PC2_variance <- round(explained_variance[2], 1)
 
 # Create a data frame for PCA results
 pca_data <- data.frame(
@@ -239,15 +237,31 @@ pca_data <- data.frame(
 # Merge PCA results with metadata
 pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 
+# Create this for better sample name visualization
+pca_data$Sample_for_plot <- gsub("^TARGET-20-", "", pca_data$Sample)
+
 # Plot PCA stratified by CR_status
-ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
+pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample_for_plot)) +
   geom_point(size = 4) +
-  geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
-  ggtitle("PCA Stratified by CR_status") +
+  geom_text_repel(vjust = -0.5, hjust = 0.5, size = 3, show.legend = FALSE) +
+  ggtitle("PCA plot based on raw counts") +
+  labs(
+    subtitle = "Differentiating responders from non-responders"
+  ) +
   xlab(paste0("PC 1 (", PC1_variance, "% variance explained)")) +
   ylab(paste0("PC 2 (", PC2_variance, "% variance explained)")) +
-  scale_color_discrete(name = "CR Status") +
-  theme_minimal()
+  scale_color_discrete(name = "CR status") +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # Set panel background to white
+    plot.background = element_rect(fill = "white", color = NA)    # Set overall plot background to white
+  )
+
+pca_plot
+
+# Save the plot
+ggsave("PCA_raw_counts.png", plot = pca_plot, width = 6, height = 5, dpi = 300)
+
 ```
 
 It would be visual and meaning-wise better to perform PCA also based on the TPM counts (normalize for gene length and mainly for sequencing depth). We don't have the TPM values so we must calculate them.
@@ -369,32 +383,47 @@ standardized_data <- scale(expression_data)
 cat("Dimension of standardized data:", dim(standardized_data), "\n")
 
 # Perform PCA
-pca_result <- prcomp(standardized_data, scale. = TRUE)
+pca_result_tpm <- prcomp(standardized_data, scale. = TRUE)
 
 # Extract variance explained by the first two components
-explained_variance <- (pca_result$sdev^2) / sum(pca_result$sdev^2) * 100
-PC1_variance <- round(explained_variance[1], 2)
-PC2_variance <- round(explained_variance[2], 2)
+explained_variance_tpm <- (pca_result_tpm$sdev^2) / sum(pca_result_tpm$sdev^2) * 100
+PC1_variance_tpm <- round(explained_variance_tpm[1], 1)
+PC2_variance_tpm <- round(explained_variance_tpm[2], 1)
 
 # Create a data frame for PCA results
-pca_data <- data.frame(
+pca_data_tpm <- data.frame(
   Sample = rownames(standardized_data),
-  PC1 = pca_result$x[, 1],
-  PC2 = pca_result$x[, 2]
+  PC1_tpm = pca_result_tpm$x[, 1],
+  PC2_tpm = pca_result_tpm$x[, 2]
 )
 
 # Merge PCA results with metadata
-pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
+pca_data_tpm <- left_join(pca_data_tpm, metadata, by = c("Sample" = "TARGET_USI"))
+
+# Create this for better sample name visualization
+pca_data_tpm$Sample_for_plot <- gsub("^TARGET-20-", "", pca_data_tpm$Sample)
 
 # Visualize PCA
-ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
+pca_plot_tpm <- ggplot(pca_data_tpm, aes(x = PC1_tpm, y = PC2_tpm, color = CR_status, label = Sample_for_plot)) +
   geom_point(size = 4) +
-  geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
-  ggtitle("PCA Stratified by CR_status") +
-  xlab(paste0("PC 1 (", PC1_variance, "% variance explained)")) +
-  ylab(paste0("PC 2 (", PC2_variance, "% variance explained)")) +
+  geom_text_repel(vjust = -0.5, hjust = 0.5, size = 3, show.legend = FALSE) +
+  ggtitle("PCA plot based on TPM values") +
+  labs(
+    subtitle = "Differentiating responders from non-responders"
+  ) +
+  xlab(paste0("PC 1 (", PC1_variance_tpm, "% variance explained)")) +
+  ylab(paste0("PC 2 (", PC2_variance_tpm, "% variance explained)")) +
   scale_color_discrete(name = "CR Status") +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # Set panel background to white
+    plot.background = element_rect(fill = "white", color = NA)    # Set overall plot background to white
+  )
+
+pca_plot_tpm
+
+# Save the plot
+ggsave("PCA_TPM.png", plot = pca_plot_tpm, width = 6, height = 5, dpi = 300)
 ```
 
 The first two PCs now explain a slight bigger percentage of the variance, although not a big improvement. Also, the placement of the samples on the plot did change, but the samples are less spread now than before.
@@ -659,6 +688,11 @@ p_value <- 1 - pchisq(sd$chisq, length(sd$n) - 1)
 km <- survfit(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
 plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability",main = "Kaplan-Meier Plot")
 text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "red", cex = 1.2)
+```
+
+```{r}
+# Extract rows from res where rownames match the biomarker_list
+res_subset <- subset(res, rownames(res) %in% top_15_genes)
 ```
 
 \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
