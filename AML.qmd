@@ -724,6 +724,7 @@ significant_genes_km <- results_df[results_df$is_significant == TRUE, ]
 # And now follow the same approach as the code block before
 # Ensure the significant_genes_df has rownames, which are the gene names
 significant_gene_names_km <- rownames(significant_genes_km)
+print(significant_gene_names_km)
 
 # Extract the significant genes from 'res' (the original DESeq2 results)
 significant_genes_with_logfc <- res[significant_gene_names_km, ]
@@ -758,15 +759,90 @@ metadata$biomarker_status[enrich[1, ] >= top_quartile_threshold] <- "high"
 # Filter out the middle 50% (samples with NA biomarker_status)
 metadata_filtered <- metadata[!is.na(metadata$biomarker_status), ]
 
-sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
+sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata_filtered) 
 sd 
 
 # Save the p-value
 p_value <- 1 - pchisq(sd$chisq, length(sd$n) - 1)
 
-km <- survfit(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
-plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability",main = "Kaplan-Meier Plot")
+# Create Kaplan-Meier survival object using filtered metadata
+km <- survfit(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata_filtered)
+
+# Plot using base R (for reference)
+plot(km, xlim = c(0, 1200), xlab = "Time in Days", ylab = "Survival Probability", main = "Kaplan-Meier Plot")
 text(x = 800, y = 0.2, labels = paste("p-value =", round(p_value, 4)), col = "red", cex = 1.2)
+
+# Survival probability summary
+survival_summary <- summary(km, times = c(0, 250, 500, 750, 1000, 1250))
+survival_probs <- survival_summary$surv
+time_points <- survival_summary$time
+
+# Enhanced Kaplan-Meier plot using ggsurvplot
+survival_gs <- ggsurvplot(
+  km, 
+  data = metadata_filtered,  # Use filtered metadata
+  pval = TRUE,  # Display p-value on the plot
+  pval.coord = c(150, 0.4),  # Set the position of the p-value annotation
+  pval.size = 10,  # Set the size of the p-value text
+  conf.int = FALSE,  # Remove confidence intervals for the survival curves
+  censor = FALSE,  # Remove censoring marks
+  risk.table = TRUE,  # Add number at risk table below the plot
+  risk.table.col = "strata",  # Color risk table by strata
+  break.time.by = 250,  # Set x-axis breaks to be every 250 days
+  size = 3,  # Increase the line thickness of the survival curves
+  ggtheme = theme_minimal() +  # Set a clean minimal theme
+    theme(
+      panel.background = element_rect(fill = "white", color = NA),  # Ensure panel background is white
+      plot.background = element_rect(fill = "white", color = NA),   # Ensure overall plot background is white
+      legend.background = element_rect(fill = "white", color = NA), # Set legend background to white
+      legend.key = element_rect(fill = "white", color = NA),        # Set legend key (box around legend items) to white
+      plot.margin = margin(t = 10, r = 20, b = 10, l = 10, unit = "mm")  # Add more margin space, especially on the right
+    ),
+  palette = c("#E64B35", "#4DBBD5"),  # Set custom colors for each group
+  title = "Kaplan-Meier estimator plot",
+  subtitle = "Stratifying patients based on gene set enrichment",
+  xlab = "Time (Days)",
+  ylab = "Survival Probability",
+  legend.title = "Gene set enrichment",
+  legend.labs = c("Top quartile", "Bottom quartile"),  
+  xlim = c(0, 1200),
+  ylim = c(0.25, 1),
+  font.title = c(16, "bold"),  # Customize title font
+  font.subtitle = c(13, "bold"),  # Customize subtitle font
+  font.x = c(14),  # Customize x-axis label font
+  font.y = c(14),  # Customize y-axis label font
+  font.tickslab = c(12),  # Customize tick label font
+  font.legend = c(12)  # Customize legend font
+)
+
+# Add annotations for survival probabilities
+for (i in 1:length(time_points)) {
+  survival_gs$plot <- survival_gs$plot + 
+    annotate(
+      "text",
+      x = time_points[i], 
+      y = survival_probs[i], 
+      label = paste0("S(", time_points[i], ") = ", round(survival_probs[i], 2)),
+      size = 4,
+      hjust = -0.1,
+      vjust = 1.5,
+      color = "black"
+    )
+}
+
+# Combine the main plot and risk table using cowplot::plot_grid
+combined_plot_gs <- plot_grid(
+  survival_gs$plot,        # Main survival plot with annotations
+  survival_gs$table + theme(plot.background = element_rect(fill = "white")),  # Risk table with white background
+  ncol = 1,                # Stack vertically
+  rel_heights = c(3, 1)    # Ratio of space given to the plot and the risk table
+)
+
+# Display the combined plot
+print(combined_plot_gs)
+
+# Save the combined plot with annotations
+ggsave("Kaplan_Meier_GS_with_Annotations.png", plot = combined_plot_gs, width = 10, height = 10, dpi = 300, bg = "white")
 ```
 
 ```{r}
