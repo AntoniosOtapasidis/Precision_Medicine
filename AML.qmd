@@ -53,11 +53,7 @@ head(metadata)
 
 Since we have different tsv files for every sample, we need to load them all, pre-process them and merge them.
 
-We can create two files:
-
-1.  One with gene names as row names and samples as column names. Here, because multiple gene ids may map to the same gene name we must either sum those (approach A), keep the most expressed isoform (approach B) or another handling.
-
-2.  The same but with gene ids as row names, samples as column names plus another column with the gene names. Could be useful if we try CAR-T cell target evaluation for isoforms (maybe this is too much).
+We will create a file with gene names as row names and samples as column names. Here, because multiple gene ids may map to the same gene name we must sum those up (transcripts from the same gene responsible or different isoforms).
 
 ```{r}
 # Creates the data frame "merged_counts"
@@ -136,51 +132,9 @@ if (file.exists(output_file)) {
 print(merged_counts)
 ```
 
-```{r}
-# TO BE USED IF WE ANALYZE ISOFORMS
-# Creates the data frame "merged_counts_with_ids"
-# Includes gene_id
-
-# Step 1: Initialize an empty list to store dataframes
-counts_dataframe_list_with_ids <- list()
-
-# Step 2: Loop through each file, read it, process, and store in the list
-for (file in counts_files) {
-  # Load the file into a dataframe
-  df <- read.delim(file, sep = "\t", header = TRUE)
-
-  # Perform preprocessing
-  # Drop columns that we do not need (assuming we keep stranded_first, stranded_second, and gene_id)
-  columns_to_drop <- c("gene_type", "unstranded", "tpm_unstranded", "fpkm_unstranded", "fpkm_uq_unstranded")
-  df <- df[, !(names(df) %in% columns_to_drop)]
-
-  # Drop columns that have all NA values
-  df <- df[, colSums(!is.na(df)) > 0]
-
-  # Add `stranded_first` and `stranded_second` and create a new combined column
-  df$combined_stranded <- rowSums(df[, c("stranded_first", "stranded_second")], na.rm = TRUE)
-
-  # Drop `stranded_first` and `stranded_second`
-  df <- df[, !(names(df) %in% c("stranded_first", "stranded_second"))]
-
-  # Rename the combined column to the file name
-  new_column_name <- gsub(".*/|\\.tsv$", "", file)
-  colnames(df)[colnames(df) == "combined_stranded"] <- new_column_name
-
-  # Store the dataframe in the list
-  counts_dataframe_list_with_ids[[file]] <- df
-}
-
-# Step 3: Merge all dataframes in the list by both "gene_name" and "gene_id"
-merged_counts_with_ids <- purrr::reduce(counts_dataframe_list_with_ids, full_join, by = c("gene_name", "gene_id"))
-
-# Check the merged dataframe
-print(merged_counts_with_ids)
-```
-
 ## Metadata pre-processing
 
-We care about the following variables:
+We will work with the following variables:
 
 -   Vital status (alive/dead)
 
@@ -189,6 +143,8 @@ We care about the following variables:
 -   MRD at end of course 1&2 (for stratifying patients)
 
 -   CR status at end of course 1&2 (for stratifying patients)
+
+-   Protocol
 
 ```{r}
 # Keep only the variables we will work with
@@ -216,7 +172,11 @@ names(metadata)[names(metadata) == "Overall_Survival_Time_in_Days"] <- "Survival
 metadata$CR_status <- ifelse(metadata$CR_status == "CR", "Yes", "No")
 ```
 
-## PCA on the data on the Raw count
+The variable "Protocol" was used to identify if we had patients treated with different protocols. Out initial data set contained patients treated with two different protocols (19+1). After performing PCA on that data, we identified that PC1 was catching the variance of the different protocol (stratified the patients on the plot based on the protocol), and the sole patient to be treated with a different protocol was excluded. In their place, another one with the same protocol as the rest was added.
+
+We did that since this specific patient would add variance related only to technical issues and it would be very difficult (if even possible) to account properly for that in our downstream analysis.
+
+## PCA on the raw count data
 
 ```{r}
 # Prepare the data
@@ -238,7 +198,7 @@ for (i in seq_len(ncol(expression_data))) {
 
 # Step 5: Filter features based on variance
 variances <- apply(expression_data, 2, var, na.rm = TRUE)
-threshold <- 0.0001  # Adjust as per your dataset
+threshold <- 0.0001  # Adjustable
 high_variance_features <- variances > threshold
 expression_data <- expression_data[, high_variance_features]
 
@@ -283,22 +243,18 @@ pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 ggplot(pca_data, aes(x = PC1, y = PC2, color = MRD_status, label = Sample)) +
   geom_point(size = 4) +
   geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
-  ggtitle("PCA Stratified by CR_status (Filtered Data)") +
-  xlab(paste0("Principal Component 1 (", PC1_variance, "% variance explained)")) +
-  ylab(paste0("Principal Component 2 (", PC2_variance, "% variance explained)")) +
+  ggtitle("PCA Stratified by CR_status") +
+  xlab(paste0("PC 1 (", PC1_variance, "% variance explained)")) +
+  ylab(paste0("PC 2 (", PC2_variance, "% variance explained)")) +
   scale_color_discrete(name = "MRD Status") +
   theme_minimal()
 ```
 
-## Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
+It would be visual and meaning-wise better to perform PCA also based on the TPM counts (normalize for gene length and mainly for sequencing depth). We don't have the TPM values (we actually have them, but for the unstranded values).
 
-1.  Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length
+## TPM calculation
 
-2.  Calculate scaling factors: Sum all RPK values per sample
-
-3.  Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)
-
-4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
+First, we need the **GENE LENGTH** for that, which we don't have. We can try to get this info from Ensembl.
 
 ```{r}
 # Step 1: Connect to Ensembl
@@ -308,7 +264,7 @@ ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
 gene_symbols <- rownames(merged_counts)
 
 # Step 3: Retrieve gene lengths from Ensembl using biomaRt
-# We want to retrieve 'hgnc_symbol' and 'transcript_length'
+# We want to retrieve 'hgnc_symbol', 'transcript_length' and 'transcript_is_canonical"
 gene_lengths_df <- getBM(
   attributes = c("hgnc_symbol", "transcript_length", "transcript_is_canonical"),
   filters = "hgnc_symbol",
@@ -316,17 +272,28 @@ gene_lengths_df <- getBM(
   mart = ensembl
 )
 
+# Since there are multiple gene lengths assigned to each gene, we chose each gene's canonical length
 gene_lengths_df <- gene_lengths_df |> 
-  dplyr::filter(!is.na(transcript_is_canonical))
+dplyr::filter(!is.na(transcript_is_canonical))
 
 # Convert to a named vector
-gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc_symbol)
+gene_lengths <- setNames(gene_lengths_df$transcript_length,gene_lengths_df$hgnc_symbol)
 
 # Check the resulting gene lengths
 print(gene_lengths)
 ```
 
-### PCA ON THE TPM Counts
+Now we can **normalize the raw counts to TPM**. We can easily do that manually in four steps:
+
+1.  Calculate RPK (Reads Per Kilobase): RPK = counts / gene length in kilobases. This steps normalizes the counts for the gene length
+
+2.  Calculate scaling factors: Sum all RPK values per sample
+
+3.  Calculate corrector factor: Divide the scaling factor by 1 million (the result value is called corrector count)
+
+4.  Calculate TPM: Normalize each RPK using the corrector factor. This normalizes for sequencing depth.
+
+5.  We will log-normalize the TPM values with log2(tpm+1) to reduce skewness in the data, while also handling the zero values. This will stabilize variance and improve comparability.
 
 ```{r}
 # Step 1: Identify common gene names between counts data and gene lengths
@@ -370,6 +337,8 @@ write.table(tpm_counts, file = "tpm_counts.tsv", sep = "\t", quote = FALSE, row.
 write.table(log_normalized_tpm, file = "log_normalized_tpm.tsv", sep = "\t", quote = FALSE, row.names = TRUE, col.names = TRUE)
 ```
 
+Now we can perform PCA on the TPM data
+
 ```{r}
 # Step 1: Transpose TPM data for PCA (samples as rows, features as columns)
 expression_data <- t(log_normalized_tpm)
@@ -388,7 +357,7 @@ for (i in seq_len(ncol(expression_data))) {
 
 # Step 5: Filter features based on variance
 variances <- apply(expression_data, 2, var, na.rm = TRUE)
-threshold <- 0.0001  # Adjust as per your dataset
+threshold <- 0.0001  # Adjustable
 high_variance_features <- variances > threshold
 expression_data <- expression_data[, high_variance_features]
 
@@ -415,29 +384,23 @@ pca_data <- data.frame(
 )
 
 # Merge PCA results with metadata
-library(dplyr)
 pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 
 # Visualize PCA
-library(ggplot2)
 ggplot(pca_data, aes(x = PC1, y = PC2, color = MRD_status, label = Sample)) +
   geom_point(size = 4) +
   geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
-  ggtitle("PCA Stratified by CR_status (Filtered Data)") +
-  xlab(paste0("Principal Component 1 (", PC1_variance, "% variance explained)")) +
-  ylab(paste0("Principal Component 2 (", PC2_variance, "% variance explained)")) +
+  ggtitle("PCA Stratified by CR_status") +
+  xlab(paste0("PC 1 (", PC1_variance, "% variance explained)")) +
+  ylab(paste0("PC 2 (", PC2_variance, "% variance explained)")) +
   scale_color_discrete(name = "MRD Status") +
   theme_minimal()
-
 ```
 
-```{r}
-rownames(expression_data)
-```
+The first two PCs now explain a slight bigger percentage of the variance, although not a big improvement. Also, the placement of the samples on the plot did change, but the samples are less spread now than before.
 
 ```{r}
 cat("Dimensions of expression_data: ", dim(expression_data), "\n")
-
 ```
 
 ```{r}
@@ -623,46 +586,6 @@ volcano_plot <- volcano_plot +
 
 # Print the volcano plot
 print(volcano_plot)
-
-```
-
-```{r}
-
-
-```
-
-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
-
-I tranfered the TPM cells above
-
-## TPM calculation
-
-We don't have the TPM values (we actually have them, but for the unstranded values). First, we need the **GENE LENGTH** for that, which we don't have. We can try to get this info from Ensembl.
-
-```{r}
-# Step 1: Connect to Ensembl
-#ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
-
-# Step 2: Get all the gene names from merged_counts
-#gene_symbols <- rownames(merged_counts)
-
-# Step 3: Retrieve gene lengths from Ensembl using biomaRt
-# We want to retrieve 'hgnc_symbol' and 'transcript_length'
-#gene_lengths_df <- getBM(
- # attributes = c("hgnc_symbol", "transcript_length", "transcript_is_canonical"),
-#  filters = "hgnc_symbol",
- # values = gene_symbols,
-#  mart = ensembl
-#)
-
-#gene_lengths_df <- gene_lengths_df |> 
- # dplyr::filter(!is.na(transcript_is_canonical))
-
-# Convert to a named vector
-#gene_lengths <- setNames(gene_lengths_df$transcript_length, gene_lengths_df$hgnc_symbol)
-
-# Check the resulting gene lengths
-#print(gene_lengths)
 ```
 
 Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.
