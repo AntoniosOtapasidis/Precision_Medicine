@@ -240,17 +240,17 @@ pca_data <- data.frame(
 pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 
 # Plot PCA stratified by CR_status
-ggplot(pca_data, aes(x = PC1, y = PC2, color = MRD_status, label = Sample)) +
+ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
   geom_point(size = 4) +
   geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
   ggtitle("PCA Stratified by CR_status") +
   xlab(paste0("PC 1 (", PC1_variance, "% variance explained)")) +
   ylab(paste0("PC 2 (", PC2_variance, "% variance explained)")) +
-  scale_color_discrete(name = "MRD Status") +
+  scale_color_discrete(name = "CR Status") +
   theme_minimal()
 ```
 
-It would be visual and meaning-wise better to perform PCA also based on the TPM counts (normalize for gene length and mainly for sequencing depth). We don't have the TPM values (we actually have them, but for the unstranded values).
+It would be visual and meaning-wise better to perform PCA also based on the TPM counts (normalize for gene length and mainly for sequencing depth). We don't have the TPM values so we must calculate them.
 
 ## TPM calculation
 
@@ -387,13 +387,13 @@ pca_data <- data.frame(
 pca_data <- left_join(pca_data, metadata, by = c("Sample" = "TARGET_USI"))
 
 # Visualize PCA
-ggplot(pca_data, aes(x = PC1, y = PC2, color = MRD_status, label = Sample)) +
+ggplot(pca_data, aes(x = PC1, y = PC2, color = CR_status, label = Sample)) +
   geom_point(size = 4) +
   geom_text(vjust = -0.5, hjust = 0.5, size = 3) +
   ggtitle("PCA Stratified by CR_status") +
   xlab(paste0("PC 1 (", PC1_variance, "% variance explained)")) +
   ylab(paste0("PC 2 (", PC2_variance, "% variance explained)")) +
-  scale_color_discrete(name = "MRD Status") +
+  scale_color_discrete(name = "CR Status") +
   theme_minimal()
 ```
 
@@ -483,15 +483,15 @@ significant_genes <- res[!is.na(res$padj) & res$padj < 0.05, ]
 significant_gene_names <- rownames(significant_genes)
 ```
 
-We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those. We will find the median expression and see if their expression is higher or lower. Because in this way we **COMPARE** samples, we need to use TPM values (or RPKM) and not raw counts, since we need to normalize for **SEQUENCING DEPTH**. We have calculated that in a previous part of the script.
-
 ## Volcano plot
+
+We found some genes that are significantly differentiated between responders and non-responders. We can visualize the most significant ones with a volcano plot.
 
 ```{r}
 # Add a significance column for plotting
 res$significance <- "Not Significant"
-res$significance[res$padj < 0.05 & res$log2FoldChange > 0] <- "Upregulated"
-res$significance[res$padj < 0.05 & res$log2FoldChange < 0] <- "Downregulated"
+res$significance[res$padj < 0.025 & res$log2FoldChange > 0] <- "Upregulated"
+res$significance[res$padj < 0.025 & res$log2FoldChange < 0] <- "Downregulated"
 
 # Volcano plot
 volcano_plot <- ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
@@ -525,7 +525,7 @@ volcano_plot <- volcano_plot +
 print(volcano_plot)
 ```
 
-Back to stratifying patients on the expression of the significantly differentially expressed genes between responders and non-responders.
+We found a satisfactory amount of differentially expressed genes. We will try to stratify patients on those and perform survival analysis. We will find the median expression and see if the expression for each sample is higher or lower. Because in this way we **COMPARE** samples, we need to use the TPM values and not raw counts, since they need to be comparable.
 
 ```{r}
 # Since the significant genes were found based on the raw counts, we need first to check if they are present in the tpm dataframe - we lose some genes here
@@ -554,7 +554,7 @@ for (gene in common_significant_genes) {
 
   # Store p-value and significance in the results matrix
   results_matrix[gene, "p_value"] <- p_value
-  results_matrix[gene, "is_significant"] <- p_value < 0.05
+  results_matrix[gene, "is_significant"] <- p_value < 0.025
 }
 
 # Convert results_matrix to a data frame for easier viewing
@@ -618,15 +618,38 @@ res3 <- significant_genes_with_logfc %>%
   #filter(log2FoldChange > 0) %>%   # Filter for upregulated genes
   arrange(padj)                    # Sort by adjusted p-value
 
-# Select the top 15 most significant genes
-gene_set <- list(responder_set = rownames(res3))
+# Sort res3 by padj in ascending order
+res3_sorted <- res3[order(res3$padj), ]
+
+# Get the rownames of the top 15 genes based on the sorted padj values
+top_15_genes <- rownames(res3_sorted)
+
+# Create a gene set list with the top 15 genes
+gene_set <- list(responder_set = top_15_genes)
 
 # Perform the sample wise gene set enrichment
 param <- ssgseaParam(as.matrix(log_normalized_tpm), gene_set)
 enrich <- gsva(param)
 
 # Perform the log rank and produce the plot
-metadata$biomarker_status <- enrich[1,] > median(enrich[1,])
+#metadata$biomarker_status <- enrich[1,] > median(enrich[1,])
+
+# Define bottom and top quartile thresholds
+bottom_quartile_threshold <- quantile(enrich[1, ], 0.25, na.rm = TRUE)  # 25th percentile (bottom quartile)
+top_quartile_threshold <- quantile(enrich[1, ], 0.75, na.rm = TRUE)    # 75th percentile (top quartile)
+
+# Create a vector for biomarker_status, initially set to NA for all
+metadata$biomarker_status <- rep(NA, length(enrich[1, ]))
+
+# Assign "low" to samples in the bottom 25%
+metadata$biomarker_status[enrich[1, ] <= bottom_quartile_threshold] <- "low"
+
+# Assign "high" to samples in the top 25%
+metadata$biomarker_status[enrich[1, ] >= top_quartile_threshold] <- "high"
+
+# Filter out the middle 50% (samples with NA biomarker_status)
+metadata_filtered <- metadata[!is.na(metadata$biomarker_status), ]
+
 sd <- survdiff(Surv(Survival_Time, Vital_Status) ~ biomarker_status, data = metadata) 
 sd 
 
@@ -653,4 +676,67 @@ BiocManager::install("clusterProfiler")
 enrich <- enrichGO(gene = biomarker_list, OrgDb = org.Hs.eg.db, ont = "BP", keyType = "SYMBOL")
 dotplot(enrich, showCategory = 20, title = "GO Biological Processes")
 
+```
+
+```{r}
+# Install required packages if not already installed
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("clusterProfiler", quietly = TRUE)) {
+  BiocManager::install("clusterProfiler")
+}
+
+if (!requireNamespace("org.Hs.eg.db", quietly = TRUE)) {
+  BiocManager::install("org.Hs.eg.db")
+}
+
+# Load required libraries
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Define the biomarker list
+biomarker_list <- c(
+ "MEG3","MEX3B", "MTND1P23", "GPRASP2",  "TOE1" , "PLEKHG4",  "BOK" , "TCTE1"   , "ADAMTS14")
+
+
+# Map SYMBOL to ENTREZID
+converted_genes <- bitr(
+  biomarker_list,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Check if any valid mappings were found
+if (nrow(converted_genes) > 0) {
+  # Perform GO enrichment analysis
+  enrich <- enrichGO(
+    gene = converted_genes$ENTREZID,  # Use ENTREZ IDs
+    OrgDb = org.Hs.eg.db,
+    ont = "C",                       # Biological Processes
+    keyType = "ENTREZID",
+    pvalueCutoff = 0.1,               # Relax the threshold
+    qvalueCutoff = 0.1
+  )
+  
+  # Convert enrichment results to a data frame
+  result_df <- as.data.frame(enrich)
+  
+  # Check if results exist
+  if (nrow(result_df) > 0) {
+    # Print the first few rows of results
+    print(head(result_df))
+    
+    # Visualize the results
+    dotplot(enrich, showCategory = 20, title = "GO Biological Processes")
+  } else {
+    print("No enriched GO terms found.")
+  }
+} else {
+  print("No valid gene mappings found in biomarker_list.")
+}
+
+#We couldn t identify a significant Pathway
 ```
